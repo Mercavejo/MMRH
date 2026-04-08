@@ -50,6 +50,8 @@ export async function executeTenantRetention(
   const logsCutoff = cutoffDate(params.retentionDaysAuditLogs);
 
   const txResult = await db.transaction(async (tx) => {
+    // NOTE: Document deletion currently not implemented — no documents table in schema.
+    // Future: integrate with document management service when documents table exists.
     const documentsAffected = 0;
 
     const auditCountRows = await tx

@@ -160,50 +160,57 @@ export async function GET(request: NextRequest) {
     .limit(1);
 
   const policy = policies[0];
-  if (!policy) {
-    return NextResponse.json(
-      successResponse({
-        tenant_id: tenantId,
-        retention_days_documents: 90,
-        retention_days_audit_logs: 365,
-        legal_basis: "legitimate_interest",
-        minimization_profile: "standard",
-        enabled: true,
-      }, correlationId, tenantId),
-    );
-  }
+  
+  const getPolicy = policy ?? {
+    tenantId: tenantId,
+    retentionDaysDocuments: 90,
+    retentionDaysAuditLogs: 365,
+    legalBasis: "legitimate_interest",
+    minimizationProfile: "standard" as const,
+    enabled: true,
+    updatedAt: new Date(),
+  };
 
+  const isDefault = !policy;
+  
   const minimized = minimizeDataForRole(
     {
-      tenant_id: policy.tenantId,
-      retention_days_documents: policy.retentionDaysDocuments,
-      retention_days_audit_logs: policy.retentionDaysAuditLogs,
-      legal_basis: policy.legalBasis,
-      minimization_profile: policy.minimizationProfile,
-      enabled: policy.enabled,
-      updated_at: policy.updatedAt.toISOString(),
+      tenant_id: getPolicy.tenantId,
+      retention_days_documents: getPolicy.retentionDaysDocuments,
+      retention_days_audit_logs: getPolicy.retentionDaysAuditLogs,
+      legal_basis: getPolicy.legalBasis,
+      minimization_profile: getPolicy.minimizationProfile,
+      enabled: getPolicy.enabled,
+      updated_at: getPolicy.updatedAt.toISOString(),
     },
     {
-      minimizationProfile: policy.minimizationProfile,
+      minimizationProfile: getPolicy.minimizationProfile,
       role: auth.role,
     },
   );
 
-  await db.insert(complianceEvidence).values({
-    tenantId,
-    actorId: auth.userId,
-    correlationId,
-    action: "compliance.policy.read.minimized.v1",
-    legalBasis: policy.legalBasis,
-    dataCategory: "policy",
-    retentionAppliedDays: policy.retentionDaysDocuments,
-    status: "success",
-    details: {
-      minimization_profile: policy.minimizationProfile,
-      role: auth.role,
-      fields_returned: Object.keys(minimized),
-    },
-  });
+  // Audit trail for policy read (applies to both fetched and default policies)
+  try {
+    await db.insert(complianceEvidence).values({
+      tenantId,
+      actorId: auth.userId,
+      correlationId,
+      action: "compliance.policy.read.minimized.v1",
+      legalBasis: getPolicy.legalBasis,
+      dataCategory: "policy",
+      retentionAppliedDays: getPolicy.retentionDaysDocuments,
+      status: "success",
+      details: {
+        minimization_profile: getPolicy.minimizationProfile,
+        role: auth.role,
+        fields_returned: Object.keys(minimized),
+        is_default: isDefault,
+      },
+    });
+  } catch (error) {
+    // Log evidence failure but don't block the response
+    console.error("Failed to insert compliance evidence for policy read:", error);
+  }
 
   return NextResponse.json(successResponse(minimized, correlationId, tenantId));
 }
@@ -280,21 +287,11 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  await db
-    .insert(compliancePolicies)
-    .values({
-      tenantId,
-      retentionDaysDocuments: parsed.data.retention_days_documents,
-      retentionDaysAuditLogs: parsed.data.retention_days_audit_logs,
-      legalBasis: parsed.data.legal_basis,
-      minimizationProfile: parsed.data.minimization_profile,
-      enabled: parsed.data.enabled,
-      updatedBy: auth.userId,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: compliancePolicies.tenantId,
-      set: {
+  try {
+    await db
+      .insert(compliancePolicies)
+      .values({
+        tenantId,
         retentionDaysDocuments: parsed.data.retention_days_documents,
         retentionDaysAuditLogs: parsed.data.retention_days_audit_logs,
         legalBasis: parsed.data.legal_basis,
@@ -302,8 +299,30 @@ export async function PUT(request: NextRequest) {
         enabled: parsed.data.enabled,
         updatedBy: auth.userId,
         updatedAt: new Date(),
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: compliancePolicies.tenantId,
+        set: {
+          retentionDaysDocuments: parsed.data.retention_days_documents,
+          retentionDaysAuditLogs: parsed.data.retention_days_audit_logs,
+          legalBasis: parsed.data.legal_basis,
+          minimizationProfile: parsed.data.minimization_profile,
+          enabled: parsed.data.enabled,
+          updatedBy: auth.userId,
+          updatedAt: new Date(),
+        },
+      });
+  } catch (error) {
+    console.error("Failed to upsert compliance policy:", error);
+    return NextResponse.json(
+      errorResponse(
+        "DATABASE_ERROR",
+        "Falha ao atualizar politica de compliance.",
+        correlationId,
+      ),
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json(
     successResponse(

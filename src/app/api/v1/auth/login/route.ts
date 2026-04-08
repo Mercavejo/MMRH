@@ -19,6 +19,7 @@ import {
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
+  tenant_id: z.string().uuid().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -68,11 +69,26 @@ export async function POST(request: NextRequest) {
     })
     .from(userTenantMappings)
     .where(eq(userTenantMappings.userId, user.id))
-    .limit(1);
+    .limit(100);
 
-  const mapping = mappingRows[0];
+  const mapping = parsed.data.tenant_id
+    ? mappingRows.find((row) => row.tenantId === parsed.data.tenant_id)
+    : mappingRows.length === 1
+      ? mappingRows[0]
+      : undefined;
 
   if (!mapping) {
+    if (mappingRows.length > 1 && !parsed.data.tenant_id) {
+      return NextResponse.json(
+        errorResponse(
+          "CONFLICT",
+          "Usuario vinculado a mais de um tenant. Informe tenant_id para autenticar.",
+          correlationId,
+        ),
+        { status: 409 },
+      );
+    }
+
     return NextResponse.json(
       errorResponse(
         "FORBIDDEN",
