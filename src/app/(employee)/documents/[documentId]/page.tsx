@@ -1,9 +1,16 @@
 import Link from "next/link";
 import { Alert, Button, Container, Paper, Stack, Typography } from "@mui/material";
+import { cookies } from "next/headers";
+import { and, eq } from "drizzle-orm";
+import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
+import { validateSession } from "@/lib/auth/session";
+import { db } from "@/lib/db/client";
+import { employeeDocuments } from "@/lib/db/schema";
+import type { DocumentStatus } from "@/lib/documents/status-mapping";
 
 type DetailPageProps = {
   params: Promise<{ documentId: string }>;
-  searchParams: Promise<{ from?: string }>;
+  searchParams: Promise<{ from?: string; status?: string }>;
 };
 
 export default async function EmployeeDocumentDetailPage({
@@ -11,10 +18,70 @@ export default async function EmployeeDocumentDetailPage({
   searchParams,
 }: DetailPageProps) {
   const { documentId } = await params;
-  const { from } = await searchParams;
+  const { from, status } = await searchParams;
+
+  async function resolveDocumentStatus(): Promise<DocumentStatus | undefined> {
+    try {
+      const cookieStore = await cookies();
+      const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+
+      if (!sessionToken) {
+        return undefined;
+      }
+
+      const session = await validateSession(sessionToken);
+      if (!session) {
+        return undefined;
+      }
+
+      const rows = await db
+        .select({ status: employeeDocuments.status })
+        .from(employeeDocuments)
+        .where(
+          and(
+            eq(employeeDocuments.id, documentId),
+            eq(employeeDocuments.tenantId, session.tenantId),
+            eq(employeeDocuments.userId, session.userId),
+          ),
+        )
+        .limit(1);
+
+      return rows[0]?.status as DocumentStatus | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const resolvedStatus = (await resolveDocumentStatus()) ?? status ?? "unavailable";
+  const contestationAllowed =
+    resolvedStatus === "pending" ||
+    resolvedStatus === "unavailable" ||
+    resolvedStatus === "error";
 
   const backHref = from ? `/documents?${from}` : "/documents";
   const downloadHref = `/api/v1/employee/documents/${documentId}/download?disposition=attachment`;
+  const contestationQuery = new URLSearchParams({
+    document_id: documentId,
+    status: resolvedStatus,
+  });
+
+  if (from) {
+    const fromParams = new URLSearchParams(from);
+    const periodRef = fromParams.get("period_ref");
+    const documentType = fromParams.get("document_type");
+
+    if (periodRef) {
+      contestationQuery.set("period_ref", periodRef);
+    }
+
+    if (documentType) {
+      contestationQuery.set("document_type", documentType);
+    }
+
+    contestationQuery.set("from", from);
+  }
+
+  const contestationHref = `/documents/contestacao?${contestationQuery.toString()}`;
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
@@ -35,6 +102,17 @@ export default async function EmployeeDocumentDetailPage({
           >
             Baixar documento
           </Button>
+          {contestationAllowed ? (
+            <Button
+              component={Link}
+              href={contestationHref}
+              variant="outlined"
+              color="warning"
+              aria-label={`Abrir contestacao para documento ${documentId}`}
+            >
+              Abrir contestacao
+            </Button>
+          ) : null}
           <Button component={Link} href={backHref} variant="outlined">
             Voltar para lista
           </Button>
