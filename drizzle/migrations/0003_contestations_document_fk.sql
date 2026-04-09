@@ -1,0 +1,1 @@
+ALTER TABLE "document_contestations" ADD CONSTRAINT "document_contestations_document_id_employee_documents_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."employee_documents"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint

@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -35,8 +35,10 @@ type HandlerDependencies = {
 };
 
 const querySchema = z.object({
-  tenant_id: z.string().uuid().optional(),
   disposition: z.enum(["attachment", "inline"]).optional(),
+  exp: z.coerce.number().int().positive().optional(),
+  sig: z.string().trim().min(1).optional(),
+  response: z.enum(["json", "download"]).optional(),
 });
 
 const paramsSchema = z.object({
@@ -44,13 +46,13 @@ const paramsSchema = z.object({
 });
 
 function buildDownloadSignature(params: {
+  secret: string;
   tenantId: string;
   userId: string;
   documentId: string;
   disposition: "attachment" | "inline";
   exp: number;
 }): string {
-  const secret = process.env.DOWNLOAD_SIGNING_SECRET ?? "dev-download-secret";
   const payload = [
     params.tenantId,
     params.userId,
@@ -59,7 +61,45 @@ function buildDownloadSignature(params: {
     String(params.exp),
   ].join(".");
 
-  return createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+  return createHmac("sha256", params.secret)
+    .update(payload)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function getDownloadSigningSecret(): string {
+  const secret = process.env.DOWNLOAD_SIGNING_SECRET;
+  if (!secret) {
+    throw new Error("DOWNLOAD_SIGNING_SECRET_MISSING");
+  }
+
+  return secret;
+}
+
+function isValidSignature(expected: string, provided: string): boolean {
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function buildSignedDownloadBody(document: {
+  document_id: string;
+  document_type: string;
+  period_ref: string;
+  file_name: string;
+}) {
+  return [
+    "Download placeholder",
+    `document_id=${document.document_id}`,
+    `document_type=${document.document_type}`,
+    `period_ref=${document.period_ref}`,
+    `file_name=${document.file_name}`,
+  ].join("\n");
 }
 
 export async function handleEmployeeDocumentDownload(
@@ -111,8 +151,10 @@ export async function handleEmployeeDocumentDownload(
   }
 
   const queryParsed = querySchema.safeParse({
-    tenant_id: request.nextUrl.searchParams.get("tenant_id"),
     disposition: request.nextUrl.searchParams.get("disposition") ?? undefined,
+    exp: request.nextUrl.searchParams.get("exp") ?? undefined,
+    sig: request.nextUrl.searchParams.get("sig") ?? undefined,
+    response: request.nextUrl.searchParams.get("response") ?? undefined,
   });
 
   if (!queryParsed.success) {
@@ -143,15 +185,9 @@ export async function handleEmployeeDocumentDownload(
     );
   }
 
-  const tenantId = queryParsed.data.tenant_id ?? session.tenantId;
+  const tenantId = session.tenantId;
   const disposition = queryParsed.data.disposition ?? "attachment";
-
-  if (queryParsed.data.tenant_id && session.tenantId !== tenantId) {
-    return NextResponse.json(
-      errorResponse("FORBIDDEN", "Tenant fora do escopo da sessao.", correlationId),
-      { status: 403 },
-    );
-  }
+  const responseMode = queryParsed.data.response ?? "download";
 
   const role = await resolveRole({
     userId: session.userId,
@@ -198,9 +234,93 @@ export async function handleEmployeeDocumentDownload(
       userId: session.userId,
     });
 
+    if ((queryParsed.data.exp && !queryParsed.data.sig) || (!queryParsed.data.exp && queryParsed.data.sig)) {
+      return NextResponse.json(
+        errorResponse(
+          "VALIDATION_ERROR",
+          "Parametros de assinatura incompletos para download.",
+          correlationId,
+        ),
+        { status: 400 },
+      );
+    }
+
+    if (queryParsed.data.exp && queryParsed.data.sig) {
+      const now = Math.floor(Date.now() / 1000);
+      if (queryParsed.data.exp < now) {
+        return NextResponse.json(
+          errorResponse(
+            "DOWNLOAD_LINK_EXPIRED",
+            "Link de download expirado. Solicite um novo download.",
+            correlationId,
+          ),
+          { status: 401 },
+        );
+      }
+
+      let secret: string;
+      try {
+        secret = getDownloadSigningSecret();
+      } catch {
+        return NextResponse.json(
+          errorResponse(
+            "DOWNLOAD_CONFIGURATION_ERROR",
+            "Download temporariamente indisponivel por configuracao.",
+            correlationId,
+          ),
+          { status: 503 },
+        );
+      }
+
+      const expectedSig = buildDownloadSignature({
+        secret,
+        tenantId,
+        userId: session.userId,
+        documentId: document.document_id,
+        disposition,
+        exp: queryParsed.data.exp,
+      });
+
+      if (!isValidSignature(expectedSig, queryParsed.data.sig)) {
+        return NextResponse.json(
+          errorResponse(
+            "INVALID_DOWNLOAD_SIGNATURE",
+            "Assinatura de download invalida.",
+            correlationId,
+          ),
+          { status: 403 },
+        );
+      }
+
+      return new NextResponse(buildSignedDownloadBody(document), {
+        status: 200,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+          "content-disposition": `${disposition}; filename="${document.file_name}"`,
+          [CORRELATION_ID_HEADER]: correlationId,
+        },
+      });
+    }
+
     const expiresInSeconds = 300;
     const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    let secret: string;
+    try {
+      secret = getDownloadSigningSecret();
+    } catch {
+      return NextResponse.json(
+        errorResponse(
+          "DOWNLOAD_CONFIGURATION_ERROR",
+          "Download temporariamente indisponivel por configuracao.",
+          correlationId,
+        ),
+        { status: 503 },
+      );
+    }
+
     const sig = buildDownloadSignature({
+      secret,
       tenantId,
       userId: session.userId,
       documentId: document.document_id,
@@ -209,7 +329,6 @@ export async function handleEmployeeDocumentDownload(
     });
 
     const downloadUrl = new URL(request.nextUrl.pathname, request.nextUrl.origin);
-    downloadUrl.searchParams.set("tenant_id", tenantId);
     downloadUrl.searchParams.set("exp", String(exp));
     downloadUrl.searchParams.set("sig", sig);
     downloadUrl.searchParams.set("disposition", disposition);
@@ -245,23 +364,27 @@ export async function handleEmployeeDocumentDownload(
       );
     }
 
-    return NextResponse.json(
-      successResponse(
-        {
-          document: {
-            document_id: document.document_id,
-            document_type: document.document_type,
-            period_ref: document.period_ref,
-            mime_type: document.mime_type,
-            file_name: document.file_name,
+    if (responseMode === "json") {
+      return NextResponse.json(
+        successResponse(
+          {
+            document: {
+              document_id: document.document_id,
+              document_type: document.document_type,
+              period_ref: document.period_ref,
+              mime_type: document.mime_type,
+              file_name: document.file_name,
+            },
+            download_url: downloadUrl.toString(),
+            expires_at: new Date(exp * 1000).toISOString(),
           },
-          download_url: downloadUrl.toString(),
-          expires_at: new Date(exp * 1000).toISOString(),
-        },
-        correlationId,
-        tenantId,
-      ),
-    );
+          correlationId,
+          tenantId,
+        ),
+      );
+    }
+
+    return NextResponse.redirect(downloadUrl, { status: 302 });
   } catch (error) {
     if (
       error instanceof DownloadEligibilityError &&

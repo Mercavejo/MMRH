@@ -53,21 +53,67 @@ export function serializeDocumentFilters(filters: {
   return params.toString();
 }
 
-function buildDetailsHref(documentId: string, filters: Filters) {
+export function getContestationGuidanceByStatus(status: DocumentStatus) {
+  switch (status) {
+    case "pending":
+      return "Documento em processamento. Se o prazo esperado ja passou, abra contestacao para o RH verificar a publicacao.";
+    case "unavailable":
+      return "Documento indisponivel no momento. Abra contestacao para o RH validar o lote e liberar o item correto.";
+    case "error":
+      return "houve falha operacional identificada. Abra contestacao para rastreio e tratativa prioritaria pelo RH.";
+    default:
+      return "";
+  }
+}
+
+function canOpenContestation(status: DocumentStatus) {
+  return status === "pending" || status === "unavailable" || status === "error";
+}
+
+function buildDetailsHref(documentId: string, documentStatus: DocumentStatus, filters: Filters) {
   const from = serializeDocumentFilters({
     periodRef: filters.periodRef,
     documentType: filters.documentType,
   });
 
+  const params = new URLSearchParams({
+    status: documentStatus,
+  });
+
   if (!from) {
-    return `/documents/${documentId}`;
+    return `/documents/${documentId}?${params.toString()}`;
   }
 
-  return `/documents/${documentId}?from=${encodeURIComponent(from)}`;
+  params.set("from", from);
+
+  return `/documents/${documentId}?${params.toString()}`;
 }
 
 function buildDownloadHref(documentId: string) {
   return `/api/v1/employee/documents/${documentId}/download?disposition=attachment`;
+}
+
+function buildContestationHref(
+  item: EmployeeDocumentListItem,
+  filters: Filters,
+) {
+  const params = new URLSearchParams({
+    document_id: item.document_id,
+    period_ref: item.period_ref,
+    document_type: item.document_type,
+    status: item.status,
+  });
+
+  const from = serializeDocumentFilters({
+    periodRef: filters.periodRef,
+    documentType: filters.documentType,
+  });
+
+  if (from) {
+    params.set("from", from);
+  }
+
+  return `/documents/contestacao?${params.toString()}`;
 }
 
 export function EmployeeDocumentsPageView({
@@ -87,6 +133,10 @@ export function EmployeeDocumentsPageView({
       <Paper sx={{ p: 3 }}>
         <Stack spacing={3}>
           <Typography variant="h2">Meus Documentos</Typography>
+
+          <Button component={Link} href="/notifications" variant="outlined">
+            Historico de notificacoes
+          </Button>
 
           <Stack
             component="form"
@@ -176,6 +226,12 @@ export function EmployeeDocumentsPageView({
 
                     <DocumentStatusChip status={item.status as DocumentStatus} />
 
+                    {canOpenContestation(item.status as DocumentStatus) ? (
+                      <Typography variant="body2" color="text.secondary">
+                        {getContestationGuidanceByStatus(item.status as DocumentStatus)}
+                      </Typography>
+                    ) : null}
+
                     <Button
                       component={Link}
                       href={buildDownloadHref(item.document_id)}
@@ -187,11 +243,23 @@ export function EmployeeDocumentsPageView({
 
                     <Button
                       component={Link}
-                      href={buildDetailsHref(item.document_id, activeFilters)}
+                      href={buildDetailsHref(item.document_id, item.status, activeFilters)}
                       variant="outlined"
                     >
                       Ver detalhes
                     </Button>
+
+                    {canOpenContestation(item.status as DocumentStatus) ? (
+                      <Button
+                        component={Link}
+                        href={buildContestationHref(item, activeFilters)}
+                        variant="outlined"
+                        color="warning"
+                        aria-label={`Abrir contestacao para ${item.document_type} ${item.period_ref}`}
+                      >
+                        Abrir contestacao
+                      </Button>
+                    ) : null}
                   </Stack>
                 </Paper>
               ))}

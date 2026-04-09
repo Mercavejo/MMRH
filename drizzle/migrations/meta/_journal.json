@@ -15,6 +15,34 @@
       "when": 1775682779877,
       "tag": "0001_melodic_misty_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775736300000,
+      "tag": "0002_soft_document_contestations",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775737931054,
+      "tag": "0003_contestations_document_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775751000000,
+      "tag": "0004_brown_employee_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775754150000,
+      "tag": "0005_straightforward_batch_routing",
+      "breakpoints": true
     }
   ]
 }

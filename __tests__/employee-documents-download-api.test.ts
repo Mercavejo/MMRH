@@ -28,6 +28,8 @@ describe("employee documents download api", () => {
   let deps: MockDeps;
 
   beforeEach(() => {
+    process.env.DOWNLOAD_SIGNING_SECRET = "test-download-secret";
+
     deps = buildDeps();
 
     deps.validateSessionFn.mockResolvedValue({
@@ -51,7 +53,7 @@ describe("employee documents download api", () => {
 
   it("returns signed download metadata without exposing storage key", async () => {
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -75,7 +77,7 @@ describe("employee documents download api", () => {
 
   it("rejects invalid document id", async () => {
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/invalid/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/invalid/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -94,7 +96,28 @@ describe("employee documents download api", () => {
 
   it("rejects missing session", async () => {
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
+    );
+
+    const response = await handleEmployeeDocumentDownload(request, {
+      documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }, deps);
+    const body = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(body.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("rejects invalid session with session cookie", async () => {
+    deps.validateSessionFn.mockResolvedValue(null);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
+      {
+        headers: {
+          cookie: "session_id=token",
+        },
+      },
     );
 
     const response = await handleEmployeeDocumentDownload(request, {
@@ -110,7 +133,7 @@ describe("employee documents download api", () => {
     deps.resolveRoleFn.mockResolvedValue("rh_operator");
 
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -127,9 +150,9 @@ describe("employee documents download api", () => {
     expect(body.error.code).toBe("FORBIDDEN");
   });
 
-  it("blocks tenant mismatch", async () => {
+  it("derives tenant scope from session and ignores tenant query params", async () => {
     const request = new NextRequest(
-      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=22222222-2222-4222-8222-222222222222",
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -142,8 +165,10 @@ describe("employee documents download api", () => {
     }, deps);
     const body = await response.json();
 
-    expect(response.status).toBe(403);
-    expect(body.error.code).toBe("FORBIDDEN");
+    expect(response.status).toBe(200);
+    expect(body.data.document.document_id).toBe(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
   });
 
   it("maps not downloadable error", async () => {
@@ -155,7 +180,7 @@ describe("employee documents download api", () => {
     );
 
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -178,7 +203,7 @@ describe("employee documents download api", () => {
     );
 
     const request = new NextRequest(
-      `http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?tenant_id=${SESSION_TENANT_ID}`,
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
           cookie: "session_id=token",
@@ -197,5 +222,46 @@ describe("employee documents download api", () => {
 
     expect(response.status).toBe(503);
     expect(body.error.code).toBe("AUDIT_LOG_WRITE_FAILED");
+  });
+
+  it("consumes signed URL and returns downloadable response", async () => {
+    const initRequest = new NextRequest(
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
+      {
+        headers: {
+          cookie: "session_id=token",
+        },
+      },
+    );
+
+    const initResponse = await handleEmployeeDocumentDownload(
+      initRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+    const initBody = await initResponse.json();
+    const signedUrl = new URL(initBody.data.download_url as string);
+
+    const signedRequest = new NextRequest(signedUrl.toString(), {
+      headers: {
+        cookie: "session_id=token",
+      },
+    });
+
+    const signedResponse = await handleEmployeeDocumentDownload(
+      signedRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+
+    expect(signedResponse.status).toBe(200);
+    expect(await signedResponse.text()).not.toContain("storage_key=");
+    expect(signedResponse.headers.get("content-disposition")).toContain(
+      "attachment; filename=\"holerite-2026-03.pdf\"",
+    );
   });
 });

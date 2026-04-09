@@ -33,7 +33,7 @@ describe("employee documents download ui", () => {
   it("renders detail page with download button and guidance message", async () => {
     const page = await EmployeeDocumentDetailPage({
       params: Promise.resolve({ documentId: "doc-1" }),
-      searchParams: Promise.resolve({ from: "period_ref=2026-03" }),
+      searchParams: Promise.resolve({ from: "period_ref=2026-03", status: "pending" }),
     });
 
     const html = renderToStaticMarkup(page);
