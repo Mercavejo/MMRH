@@ -12,9 +12,15 @@ export const externalIngestionStatusEnum = pgEnum("external_ingestion_status", [
 export const externalIngestionFailureCodeEnum = pgEnum("external_ingestion_failure_code", [
   "UNAUTHORIZED_SOURCE",
   "INVALID_PAYLOAD",
+  "INVALID_CONTRACT_VERSION",
   "TENANT_MISMATCH",
   "DUPLICATE_INGESTION",
   "PROCESSING_FAILURE",
+]);
+
+export const externalIngestionValidationResultEnum = pgEnum("external_ingestion_validation_result", [
+  "success",
+  "failure",
 ]);
 
 export const externalIngestions = pgTable(
@@ -25,9 +31,13 @@ export const externalIngestions = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "restrict" }),
     sourceSystem: text("source_system").notNull(),
+    contractVersion: text("contract_version").notNull().default("v1"),
     sourceReference: text("source_reference").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     status: externalIngestionStatusEnum("status").notNull().default("received"),
+    validationResult: externalIngestionValidationResultEnum("validation_result").notNull().default("success"),
+    validationFailureCode: externalIngestionFailureCodeEnum("validation_failure_code"),
+    validatedAt: timestamp("validated_at", { withTimezone: true }).notNull().defaultNow(),
     payloadSummary: jsonb("payload_summary").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),

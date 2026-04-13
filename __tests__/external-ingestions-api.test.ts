@@ -1,7 +1,16 @@
+import { createHmac } from "node:crypto";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
+const PAYLOAD_PATH = "/api/v1/webhooks/integrations";
+const INTEGRATION_SECRET = "test-integration-secret";
+
+function buildSignature(params: { method: string; path: string; timestamp: string; body: string }) {
+  return createHmac("sha256", INTEGRATION_SECRET)
+    .update([params.method, params.path, params.timestamp, params.body].join("\n"))
+    .digest("hex");
+}
 
 const {
   validateSessionMock,
@@ -63,6 +72,9 @@ describe("external ingestions api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    process.env.PAYROLL_API_EXTERNAL_INGESTION_SECRET = INTEGRATION_SECRET;
+    process.env.SFTP_GATEWAY_EXTERNAL_INGESTION_SECRET = INTEGRATION_SECRET;
+
     validateSessionMock.mockResolvedValue({
       userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       tenantId: SESSION_TENANT_ID,
@@ -74,9 +86,16 @@ describe("external ingestions api", () => {
       ingestion_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       tenant_id: SESSION_TENANT_ID,
       source_system: "payroll-api",
+      contract_version: "v1",
       source_reference: "REF-2026-04",
       idempotency_key: "idem-12345678",
       status: "received",
+      contract_validation: {
+        contract_version: "v1",
+        validation_result: "success",
+        failure_code: null,
+        validated_at: "2026-04-13T12:00:00.000Z",
+      },
       received_at: "2026-04-13T12:00:00.000Z",
       processing_started_at: null,
       processed_at: null,
@@ -106,28 +125,47 @@ describe("external ingestions api", () => {
   });
 
   it("accepts authorized external intake and returns 202", async () => {
+    const timestamp = "2026-04-13T12:00:00.000Z";
+    const requestBody = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: { period: "2026-04", documents: 15 },
+    });
+
     const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body: requestBody,
+        }),
+        "x-integration-timestamp": timestamp,
         "x-correlation-id": "11111111-1111-4111-8111-111111111111",
         "x-integration-source": "payroll-api",
       },
-      body: JSON.stringify({
-        tenant_id: SESSION_TENANT_ID,
-        source_reference: "REF-2026-04",
-        idempotency_key: "idem-12345678",
-        payload_summary: { documents: 15 },
-      }),
+      body: requestBody,
     });
 
     const response = await POST(request);
-    const body = await response.json();
+    const responseBody = await response.json();
 
     expect(response.status).toBe(202);
     expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
-    expect(body.data.source_system).toBe("payroll-api");
-    expect(registerExternalIngestionMock).toHaveBeenCalled();
+    expect(responseBody.data.source_system).toBe("payroll-api");
+    expect(responseBody.data.contract_version).toBe("v1");
+    expect(responseBody.data.contract_validation.validation_result).toBe("success");
+    expect(registerExternalIngestionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: SESSION_TENANT_ID,
+        sourceSystem: "payroll-api",
+        contractVersion: "v1",
+      }),
+    );
   });
 
   it("rejects unauthorized source in intake", async () => {
@@ -149,6 +187,165 @@ describe("external ingestions api", () => {
 
     expect(response.status).toBe(403);
     expect(body.error.code).toBe("FORBIDDEN");
+    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects tenant mismatch through invalid intake signature", async () => {
+    const goodBody = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+    });
+    const tamperedBody = JSON.stringify({
+      tenant_id: "22222222-2222-4222-8222-222222222222",
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+    });
+    const timestamp = "2026-04-13T12:00:00.000Z";
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body: goodBody,
+        }),
+      },
+      body: tamperedBody,
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error.code).toBe("FORBIDDEN");
+    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 for duplicate intake", async () => {
+    const timestamp = "2026-04-13T12:00:00.000Z";
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: { period: "2026-04", documents: 15 },
+    });
+
+    registerExternalIngestionMock.mockRejectedValueOnce(
+      new ExternalIngestionError(
+        "DUPLICATE_INGESTION",
+        "Intake duplicado para a mesma origem e referencia.",
+        409,
+        {
+          failure_code: "DUPLICATE_INGESTION",
+          recommended_action: "Use a mesma chave de idempotencia para reenvio controlado ou abra nova referencia.",
+        },
+      ),
+    );
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const bodyResponse = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(bodyResponse.error.code).toBe("DUPLICATE_INGESTION");
+    expect(bodyResponse.error.details.failure_code).toBe("DUPLICATE_INGESTION");
+  });
+
+  it("rejects unsupported contract version with structured validation error", async () => {
+    const timestamp = "2026-04-13T12:00:00.000Z";
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v999",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: { period: "2026-04", documents: 15 },
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const responseBody = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(responseBody.error.code).toBe("VALIDATION_ERROR");
+    expect(responseBody.error.details.failure_code).toBe("INVALID_CONTRACT_VERSION");
+    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects schema-invalid payload with structured validation error", async () => {
+    const timestamp = "2026-04-13T12:00:00.000Z";
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: { period: "2026-04" },
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const responseBody = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(responseBody.error.code).toBe("VALIDATION_ERROR");
+    expect(responseBody.error.details.failure_code).toBe("INVALID_PAYLOAD");
     expect(registerExternalIngestionMock).not.toHaveBeenCalled();
   });
 

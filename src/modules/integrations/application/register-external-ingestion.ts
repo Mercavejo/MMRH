@@ -1,4 +1,5 @@
 import {
+  classifyExternalIngestionFailure,
   normalizeExternalIngestionRegistration,
   type ExternalIngestionRegistrationInput,
 } from "../domain/external-ingestion";
@@ -33,11 +34,21 @@ export async function registerExternalIngestion(input: ExternalIngestionRegistra
   } catch (error) {
     if (error instanceof ExternalIngestionRepositoryError) {
       if (error.code === "DUPLICATE_INGESTION") {
-        throw new ExternalIngestionError("DUPLICATE_INGESTION", error.message, 409, error.details);
+        const classification = classifyExternalIngestionFailure("DUPLICATE_INGESTION");
+        throw new ExternalIngestionError("DUPLICATE_INGESTION", error.message, 409, {
+          ...error.details,
+          failure_code: "DUPLICATE_INGESTION",
+          recommended_action: classification.recommended_action,
+        });
       }
 
       if (error.code === "PROCESSING_FAILURE") {
-        throw new ExternalIngestionError("PROCESSING_FAILURE", error.message, 500, error.details);
+        const classification = classifyExternalIngestionFailure("PROCESSING_FAILURE");
+        throw new ExternalIngestionError("PROCESSING_FAILURE", error.message, 500, {
+          ...error.details,
+          failure_code: "PROCESSING_FAILURE",
+          recommended_action: classification.recommended_action,
+        });
       }
     }
 

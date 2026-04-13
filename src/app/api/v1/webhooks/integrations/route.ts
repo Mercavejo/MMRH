@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -10,10 +11,15 @@ import { userTenantMappings } from "@/lib/db/schema";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
 import { listExternalIngestions, ExternalIngestionError } from "@/modules/integrations/application/list-external-ingestions";
 import { registerExternalIngestion } from "@/modules/integrations/application/register-external-ingestion";
-import { AUTHORIZED_EXTERNAL_SOURCES } from "@/modules/integrations/domain/external-ingestion";
+import {
+  AUTHORIZED_EXTERNAL_SOURCES,
+  type AuthorizedExternalSource,
+  validateExternalIngestionContract,
+} from "@/modules/integrations/domain/external-ingestion";
 
 const intakeSchema = z.object({
   tenant_id: z.string().uuid(),
+  contract_version: z.string().trim().min(1).max(32),
   source_reference: z.string().trim().min(3).max(255),
   idempotency_key: z.string().trim().min(8).max(128),
   payload_summary: z.record(z.string(), z.unknown()).optional(),
@@ -48,6 +54,44 @@ function jsonResponse<T>(
   return withCorrelationHeader(NextResponse.json(body, init), correlationId);
 }
 
+function getIntegrationSecret(sourceSystem: AuthorizedExternalSource): string {
+  const secretEnvKeyBySource: Record<AuthorizedExternalSource, string> = {
+    "payroll-api": "PAYROLL_API_EXTERNAL_INGESTION_SECRET",
+    "sftp-gateway": "SFTP_GATEWAY_EXTERNAL_INGESTION_SECRET",
+  };
+
+  const secret = process.env[secretEnvKeyBySource[sourceSystem]];
+  if (!secret) {
+    throw new Error("EXTERNAL_INGESTION_SECRET_MISSING");
+  }
+
+  return secret;
+}
+
+function buildSignedWebhookPayload(params: {
+  method: string;
+  path: string;
+  timestamp: string;
+  body: string;
+}) {
+  return [params.method, params.path, params.timestamp, params.body].join("\n");
+}
+
+function signWebhookPayload(secret: string, payload: string): string {
+  return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+function isValidSignature(expected: string, provided: string): boolean {
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
 async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
   const mappings = await db
     .select({ role: userTenantMappings.role })
@@ -61,7 +105,9 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
 export async function POST(request: NextRequest) {
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
   const sourceSystem = request.headers.get("x-integration-source") ?? undefined;
-  const parsedBody = intakeSchema.safeParse(await request.json().catch(() => null));
+  const timestamp = request.headers.get("x-integration-timestamp") ?? undefined;
+  const signature = request.headers.get("x-integration-signature") ?? undefined;
+  const rawBody = await request.text().catch(() => null);
 
   if (!sourceSystem || !AUTHORIZED_EXTERNAL_SOURCES.includes(sourceSystem as (typeof AUTHORIZED_EXTERNAL_SOURCES)[number])) {
     return jsonResponse(
@@ -73,6 +119,57 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!timestamp || !signature || !rawBody) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Assinatura de integracao ausente ou invalida.", correlationId, {
+        source_system: sourceSystem,
+      }),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  let parsedBodyValue: unknown;
+
+  try {
+    parsedBodyValue = JSON.parse(rawBody);
+  } catch {
+    parsedBodyValue = null;
+  }
+
+  let secret: string;
+  try {
+    secret = getIntegrationSecret(sourceSystem as AuthorizedExternalSource);
+  } catch {
+    return jsonResponse(
+      errorResponse("INTERNAL_SERVER_ERROR", "Segredo de integracao ausente.", correlationId),
+      correlationId,
+      { status: 500 },
+    );
+  }
+
+  const expectedSignature = signWebhookPayload(
+    secret,
+    buildSignedWebhookPayload({
+      method: request.method,
+      path: request.nextUrl.pathname,
+      timestamp,
+      body: rawBody,
+    }),
+  );
+
+  if (!isValidSignature(expectedSignature, signature)) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Assinatura de integracao invalida.", correlationId, {
+        source_system: sourceSystem,
+      }),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  const parsedBody = intakeSchema.safeParse(parsedBodyValue);
+
   if (!parsedBody.success) {
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "Payload de intake externo invalido.", correlationId, {
@@ -83,10 +180,31 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const contractValidation = validateExternalIngestionContract({
+    sourceSystem: sourceSystem as AuthorizedExternalSource,
+    contractVersion: parsedBody.data.contract_version,
+    payloadSummary: parsedBody.data.payload_summary ?? {},
+  });
+
+  if (!contractValidation.success) {
+    return jsonResponse(
+      errorResponse("VALIDATION_ERROR", "Contrato externo invalido para a origem informada.", correlationId, {
+        source_system: sourceSystem,
+        contract_version: contractValidation.contract_version,
+        validation_result: contractValidation.validation_result,
+        failure_code: contractValidation.failure_code,
+        ...contractValidation.details,
+      }),
+      correlationId,
+      { status: 400 },
+    );
+  }
+
   try {
     const record = await registerExternalIngestion({
       tenantId: parsedBody.data.tenant_id,
       sourceSystem,
+      contractVersion: parsedBody.data.contract_version,
       sourceReference: parsedBody.data.source_reference,
       idempotencyKey: parsedBody.data.idempotency_key,
       payloadSummary: parsedBody.data.payload_summary,
@@ -104,7 +222,10 @@ export async function POST(request: NextRequest) {
     }
 
     return jsonResponse(
-      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao registrar intake externo.", correlationId),
+      errorResponse("PROCESSING_FAILURE", "Falha ao registrar intake externo.", correlationId, {
+        failure_code: "PROCESSING_FAILURE",
+        recommended_action: "Revise os logs tecnicos e tente novamente.",
+      }),
       correlationId,
       { status: 500 },
     );

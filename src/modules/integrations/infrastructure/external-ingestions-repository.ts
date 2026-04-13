@@ -36,9 +36,13 @@ function mapExternalIngestionRow(row: {
   id: string;
   tenantId: string;
   sourceSystem: string;
+  contractVersion: string;
   sourceReference: string;
   idempotencyKey: string;
   status: ExternalIngestionStatus;
+  validationResult: "success" | "failure";
+  validationFailureCode: ExternalIngestionFailureCode | null;
+  validatedAt: Date;
   payloadSummary: Record<string, unknown> | null;
   receivedAt: Date;
   processingStartedAt: Date | null;
@@ -54,9 +58,16 @@ function mapExternalIngestionRow(row: {
     ingestion_id: row.id,
     tenant_id: row.tenantId,
     source_system: row.sourceSystem as AuthorizedExternalSource,
+    contract_version: row.contractVersion,
     source_reference: row.sourceReference,
     idempotency_key: row.idempotencyKey,
     status: row.status,
+    contract_validation: {
+      contract_version: row.contractVersion,
+      validation_result: row.validationResult,
+      failure_code: row.validationFailureCode,
+      validated_at: row.validatedAt.toISOString(),
+    },
     received_at: row.receivedAt.toISOString(),
     processing_started_at: row.processingStartedAt?.toISOString() ?? null,
     processed_at: row.processedAt?.toISOString() ?? null,
@@ -117,11 +128,34 @@ export async function registerExternalIngestionInDb(
     .limit(1);
 
   if (duplicateRows[0]) {
+    const classification = classifyExternalIngestionFailure("DUPLICATE_INGESTION");
+
+    await dbClient.insert(auditLogs).values({
+      tenantId: input.tenantId,
+      actorId: null,
+      correlationId: input.correlationId,
+      action: "integrations.external_ingestion.failed.v1",
+      resourceType: "external_ingestion",
+      resourceId: duplicateRows[0].id,
+      status: "failure",
+      details: {
+        ingestion_id: duplicateRows[0].id,
+        source_reference: duplicateRows[0].sourceReference,
+        idempotency_key: duplicateRows[0].idempotencyKey,
+        failure_code: "DUPLICATE_INGESTION",
+        recommended_action: classification.recommended_action,
+      },
+    });
+
     throw new ExternalIngestionRepositoryError(
       "DUPLICATE_INGESTION",
       "Intake duplicado para a mesma origem e referencia.",
       409,
-      mapDuplicateDetails(duplicateRows[0]),
+      {
+        ...mapDuplicateDetails(duplicateRows[0]),
+        failure_code: "DUPLICATE_INGESTION",
+        recommended_action: classification.recommended_action,
+      },
     );
   }
 
@@ -131,9 +165,13 @@ export async function registerExternalIngestionInDb(
     .values({
       tenantId: input.tenantId,
       sourceSystem: input.sourceSystem,
+      contractVersion: input.contractVersion,
       sourceReference: input.sourceReference,
       idempotencyKey: input.idempotencyKey,
       status: "received",
+      validationResult: "success",
+      validationFailureCode: null,
+      validatedAt: now,
       payloadSummary: input.payloadSummary,
       receivedAt: now,
       correlationId: input.correlationId,
@@ -144,9 +182,13 @@ export async function registerExternalIngestionInDb(
       id: externalIngestions.id,
       tenantId: externalIngestions.tenantId,
       sourceSystem: externalIngestions.sourceSystem,
+      contractVersion: externalIngestions.contractVersion,
       sourceReference: externalIngestions.sourceReference,
       idempotencyKey: externalIngestions.idempotencyKey,
       status: externalIngestions.status,
+      validationResult: externalIngestions.validationResult,
+      validationFailureCode: externalIngestions.validationFailureCode,
+      validatedAt: externalIngestions.validatedAt,
       payloadSummary: externalIngestions.payloadSummary,
       receivedAt: externalIngestions.receivedAt,
       processingStartedAt: externalIngestions.processingStartedAt,
@@ -161,10 +203,32 @@ export async function registerExternalIngestionInDb(
 
   const row = rows[0];
   if (!row) {
+    const classification = classifyExternalIngestionFailure("PROCESSING_FAILURE");
+
+    await dbClient.insert(auditLogs).values({
+      tenantId: input.tenantId,
+      actorId: null,
+      correlationId: input.correlationId,
+      action: "integrations.external_ingestion.failed.v1",
+      resourceType: "external_ingestion",
+      resourceId: input.sourceReference,
+      status: "failure",
+      details: {
+        source_reference: input.sourceReference,
+        idempotency_key: input.idempotencyKey,
+        failure_code: "PROCESSING_FAILURE",
+        recommended_action: classification.recommended_action,
+      },
+    });
+
     throw new ExternalIngestionRepositoryError(
       "PROCESSING_FAILURE",
       "Falha ao registrar intake externo.",
       500,
+      {
+        failure_code: "PROCESSING_FAILURE",
+        recommended_action: classification.recommended_action,
+      },
     );
   }
 
@@ -212,9 +276,13 @@ export async function listExternalIngestionsFromDb(
         id: externalIngestions.id,
         tenantId: externalIngestions.tenantId,
         sourceSystem: externalIngestions.sourceSystem,
+        contractVersion: externalIngestions.contractVersion,
         sourceReference: externalIngestions.sourceReference,
         idempotencyKey: externalIngestions.idempotencyKey,
         status: externalIngestions.status,
+        validationResult: externalIngestions.validationResult,
+        validationFailureCode: externalIngestions.validationFailureCode,
+        validatedAt: externalIngestions.validatedAt,
         payloadSummary: externalIngestions.payloadSummary,
         receivedAt: externalIngestions.receivedAt,
         processingStartedAt: externalIngestions.processingStartedAt,
@@ -293,9 +361,13 @@ export async function listExternalIngestionsFromDb(
       id: externalIngestions.id,
       tenantId: externalIngestions.tenantId,
       sourceSystem: externalIngestions.sourceSystem,
+      contractVersion: externalIngestions.contractVersion,
       sourceReference: externalIngestions.sourceReference,
       idempotencyKey: externalIngestions.idempotencyKey,
       status: externalIngestions.status,
+      validationResult: externalIngestions.validationResult,
+      validationFailureCode: externalIngestions.validationFailureCode,
+      validatedAt: externalIngestions.validatedAt,
       payloadSummary: externalIngestions.payloadSummary,
       receivedAt: externalIngestions.receivedAt,
       processingStartedAt: externalIngestions.processingStartedAt,
