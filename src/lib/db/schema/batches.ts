@@ -12,7 +12,7 @@ import { tenants } from "./tenants";
 import { users } from "./users";
 import type { BatchRoutingManifestItem } from "@/lib/rh/batches/batch-routing";
 
-export const batchSourceFormatEnum = pgEnum("batch_source_format", ["csv", "json"]);
+export const batchSourceFormatEnum = pgEnum("batch_source_format", ["csv", "json", "pdf"]);
 
 export const batchValidationStatusEnum = pgEnum("batch_validation_status", [
   "validated",
@@ -24,6 +24,13 @@ export const batchRoutingStatusEnum = pgEnum("batch_routing_status", [
   "processing",
   "blocked",
   "completed",
+  "failed",
+]);
+
+export const batchPublicationStatusEnum = pgEnum("batch_publication_status", [
+  "pending",
+  "publishing",
+  "published",
   "failed",
 ]);
 
@@ -39,6 +46,7 @@ export const batches = pgTable("batches", {
   fileSizeBytes: integer("file_size_bytes").notNull(),
   mimeType: text("mime_type").notNull(),
   sourceFormat: batchSourceFormatEnum("source_format").notNull(),
+  organizationalUnit: text("organizational_unit"),
   validationStatus: batchValidationStatusEnum("validation_status").notNull(),
   validationSummary: jsonb("validation_summary").$type<Record<string, unknown>>().notNull(),
   routingStatus: batchRoutingStatusEnum("routing_status").notNull().default("pending"),
@@ -53,6 +61,13 @@ export const batches = pgTable("batches", {
   routingAmbiguousCount: integer("routing_ambiguous_count").notNull().default(0),
   routingBlockedReason: text("routing_blocked_reason"),
   routingProcessedAt: timestamp("routing_processed_at", { withTimezone: true }),
+  publicationStatus: batchPublicationStatusEnum("publication_status").notNull().default("pending"),
+  publicationAttempts: integer("publication_attempts").notNull().default(0),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  publishedBy: uuid("published_by").references(() => users.id, { onDelete: "set null" }),
+  lastPublicationCorrelationId: uuid("last_publication_correlation_id"),
+  lastPublicationIdempotencyKey: text("last_publication_idempotency_key"),
+  lastPublicationError: text("last_publication_error"),
   correlationId: uuid("correlation_id").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

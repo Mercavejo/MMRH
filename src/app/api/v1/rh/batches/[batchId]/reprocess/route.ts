@@ -30,6 +30,14 @@ const payloadSchema = z
     idempotency_key: z.string().trim().min(8).max(128),
   })
   .superRefine((value, ctx) => {
+    if (value.reprocess_all_eligible && value.exception_ids && value.exception_ids.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["exception_ids"],
+        message: "Nao combine exception_ids com reprocess_all_eligible=true.",
+      });
+    }
+
     if (!value.reprocess_all_eligible && (!value.exception_ids || value.exception_ids.length === 0)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

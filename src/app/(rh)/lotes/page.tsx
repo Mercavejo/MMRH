@@ -1,6 +1,6 @@
 "use client";
 
-import { type ChangeEvent, type FormEvent, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -53,7 +53,7 @@ export function BatchImportPageView(props: {
           </Typography>
           <Typography variant="h2">Importacao de relatorio e validacao inicial</Typography>
           <Typography variant="body1" color="text.secondary">
-            Envie o relatorio geral em CSV ou JSON. O sistema valida schema, obrigatoriedade e consistencia antes de qualquer processamento.
+            Envie o relatorio geral em CSV, JSON ou PDF. O sistema valida schema, obrigatoriedade e consistencia antes de qualquer processamento.
           </Typography>
         </Box>
 
@@ -72,7 +72,7 @@ export function BatchImportPageView(props: {
                 hidden
                 type="file"
                 name="file"
-                accept=".csv,.json,text/csv,application/json"
+                accept=".csv,.json,.pdf,text/csv,application/json,application/pdf"
                 aria-label="Selecionar arquivo de lote"
                 onChange={(event: ChangeEvent<HTMLInputElement>) => {
                   onFileChange(event.target.files?.[0] ?? null);
@@ -146,6 +146,18 @@ export default function RhBatchImportPage() {
   const [routingNotice, setRoutingNotice] = useState<RoutingNotice>(null);
   const [routingInProgress, setRoutingInProgress] = useState(false);
   const [reprocessInProgress, setReprocessInProgress] = useState(false);
+  const [publishingInProgress, setPublishingInProgress] = useState(false);
+  const publishIdempotencyKeyRef = useRef<string | null>(null);
+  const publishBatchIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const currentBatchId = routingProgress?.batch_id ?? null;
+
+    if (publishBatchIdRef.current !== currentBatchId) {
+      publishBatchIdRef.current = currentBatchId;
+      publishIdempotencyKeyRef.current = null;
+    }
+  }, [routingProgress?.batch_id]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -303,6 +315,64 @@ export default function RhBatchImportPage() {
     setReprocessInProgress(false);
   }
 
+  async function handlePublishBatch() {
+    if (!routingProgress?.batch_id || publishingInProgress) {
+      return;
+    }
+
+    const idempotencyKey = publishIdempotencyKeyRef.current ?? crypto.randomUUID();
+    publishIdempotencyKeyRef.current = idempotencyKey;
+    setPublishingInProgress(true);
+    setRoutingNotice({
+      tone: "info",
+      message: "Publicacao em andamento. O sistema esta liberando o lote validado no portal.",
+    });
+
+    try {
+      const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/publish`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        data: (BatchRoutingProgress & {
+          total_requested: number;
+          total_published: number;
+          total_skipped: number;
+          total_failed: number;
+        }) | null;
+        error: { message: string } | null;
+      };
+
+      if (!response.ok || !payload.data) {
+        setRoutingNotice({
+          tone: "error",
+          message: payload.error?.message ?? "Nao foi possivel publicar o lote.",
+        });
+        return;
+      }
+
+      setRoutingProgress(payload.data);
+      setRoutingNotice({
+        tone: "success",
+        message:
+          payload.data.total_published > 0
+            ? `Lote publicado com ${payload.data.total_published} documento(s).`
+            : "Lote publicado com sucesso.",
+      });
+    } catch {
+      setRoutingNotice({
+        tone: "error",
+        message: "Falha de comunicacao ao publicar o lote. Tente novamente.",
+      });
+    } finally {
+      setPublishingInProgress(false);
+    }
+  }
+
   return (
     <Stack spacing={3}>
       <BatchImportPageView
@@ -317,10 +387,12 @@ export default function RhBatchImportPage() {
         summary={routingProgress}
         isProcessing={routingInProgress}
         isReprocessing={reprocessInProgress}
+        isPublishing={publishingInProgress}
         statusTone={routingNotice?.tone ?? undefined}
         statusMessage={routingNotice?.message ?? undefined}
         onProcess={handleProcessRouting}
         onReprocess={handleReprocessEligible}
+        onPublish={handlePublishBatch}
       />
     </Stack>
   );

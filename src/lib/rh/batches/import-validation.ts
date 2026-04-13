@@ -1,4 +1,5 @@
 import { z } from "zod";
+import pdfParse from "pdf-parse";
 
 export const BATCH_DOCUMENT_TYPES = ["holerite", "cartao_ponto"] as const;
 
@@ -16,7 +17,12 @@ export const batchImportRowSchema = z.object({
 
 export type BatchImportDocumentType = (typeof BATCH_DOCUMENT_TYPES)[number];
 
-export type BatchImportRow = z.infer<typeof batchImportRowSchema>;
+export type BatchImportRow = z.infer<typeof batchImportRowSchema> & {
+  page_index?: number;
+  raw_text?: string;
+  codigo_colaborador?: string | null;
+  nome_normalizado?: string | null;
+};
 
 export type BatchImportIssueSeverity = "critical" | "warning";
 
@@ -29,7 +35,7 @@ export type BatchImportIssue = {
 };
 
 export type BatchImportValidationSummary = {
-  source_format: "csv" | "json";
+  source_format: "csv" | "json" | "pdf";
   total_rows: number;
   valid_rows: number;
   invalid_rows: number;
@@ -49,6 +55,7 @@ export type BatchImportValidationResult = {
 };
 
 const MAX_BATCH_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_BATCH_IMPORT_PDF_PAGES = 500;
 
 function isJsonSource(mimeType: string, originalFilename: string): boolean {
   return (
@@ -62,6 +69,63 @@ function isCsvSource(mimeType: string, originalFilename: string): boolean {
     mimeType === "application/csv" ||
     originalFilename.toLowerCase().endsWith(".csv")
   );
+}
+
+function isPdfSource(mimeType: string, originalFilename: string): boolean {
+  return mimeType === "application/pdf" || originalFilename.toLowerCase().endsWith(".pdf");
+}
+
+function normalizeName(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractFieldByRegex(source: string, pattern: RegExp): string | null {
+  const match = source.match(pattern);
+  return match?.[1]?.trim() || null;
+}
+
+function extractPdfPageRows(rawText: string): BatchImportRow[] {
+  const pages = rawText
+    .split("\f")
+    .map((page) => page.trim())
+    .filter((page) => page.length > 0);
+
+  return pages.map((pageText, index) => {
+    const codigoColaborador = extractFieldByRegex(
+      pageText,
+      /(?:codigo[_\s-]*colaborador|employee[_\s-]*identifier|matricula)\s*[:#-]?\s*([A-Za-z0-9._-]+)/i,
+    );
+    const nome = extractFieldByRegex(
+      pageText,
+      /(?:nome(?:\s+do\s+colaborador)?|employee(?:\s+name)?)\s*[:#-]?\s*([^\n\r]+)/i,
+    );
+    const periodRef = extractFieldByRegex(
+      pageText,
+      /(?:periodo|period_ref|competencia)\s*[:#-]?\s*(\d{4}-(0[1-9]|1[0-2]))/i,
+    );
+    const nomeNormalizado = nome ? normalizeName(nome) : null;
+    const employeeIdentifier = codigoColaborador ?? "";
+
+    return {
+      employee_identifier: employeeIdentifier,
+      document_type: "holerite",
+      period_ref: periodRef ?? "",
+      page_index: index + 1,
+      raw_text: pageText,
+      codigo_colaborador: codigoColaborador,
+      nome_normalizado: nomeNormalizado,
+    };
+  });
+}
+
+function isPasswordProtectedPdfError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return message.includes("password") || message.includes("encrypted");
 }
 
 function parseCsvLine(line: string): string[] {
@@ -127,7 +191,7 @@ function normalizeJsonRows(input: unknown): Array<Record<string, unknown>> {
 }
 
 function buildBlockedSummary(params: {
-  sourceFormat: "csv" | "json";
+  sourceFormat: "csv" | "json" | "pdf";
   issues: BatchImportIssue[];
   validRows: number;
   totalRows: number;
@@ -208,6 +272,8 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
     ? "json"
     : isCsvSource(mimeType, originalFilename)
       ? "csv"
+      : isPdfSource(mimeType, originalFilename)
+        ? "pdf"
       : null;
 
   if (!sourceFormat) {
@@ -223,7 +289,7 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
         issues: [
           {
             code: "unsupported_format",
-            message: "Formato de arquivo nao suportado. Use CSV ou JSON.",
+            message: "Formato de arquivo nao suportado. Use CSV, JSON ou PDF.",
             severity: "critical",
           },
         ],
@@ -260,7 +326,129 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
     };
   }
 
-  if (sourceFormat === "json") {
+  if (sourceFormat === "pdf") {
+    let parsedPdf: { text?: string; numpages?: number };
+
+    try {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      parsedPdf = (await pdfParse(buffer)) as { text?: string; numpages?: number };
+    } catch (error) {
+      const code = isPasswordProtectedPdfError(error)
+        ? "PDF_PASSWORD_PROTECTED"
+        : "PDF_TEXT_NOT_EXTRACTABLE";
+
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues: [
+            {
+              code,
+              message:
+                code === "PDF_PASSWORD_PROTECTED"
+                  ? "PDF protegido por senha nao pode ser processado."
+                  : "PDF sem texto extraivel para processamento.",
+              severity: "critical",
+            },
+          ],
+          totalRows: 0,
+          validRows: 0,
+        }),
+      };
+    }
+
+    const pdfPageCount = parsedPdf.numpages ?? 0;
+    if (pdfPageCount > MAX_BATCH_IMPORT_PDF_PAGES) {
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues: [
+            {
+              code: "PDF_PAGE_LIMIT_EXCEEDED",
+              message: "PDF excede limite operacional de 500 paginas.",
+              severity: "critical",
+            },
+          ],
+          totalRows: pdfPageCount,
+          validRows: 0,
+        }),
+      };
+    }
+
+    const pdfText = parsedPdf.text?.trim() ?? "";
+    if (!pdfText) {
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues: [
+            {
+              code: "PDF_TEXT_NOT_EXTRACTABLE",
+              message: "PDF sem texto extraivel para processamento.",
+              severity: "critical",
+            },
+          ],
+          totalRows: 0,
+          validRows: 0,
+        }),
+      };
+    }
+
+    const pdfRows = extractPdfPageRows(pdfText);
+    sourceTotalRows = pdfRows.length;
+
+    if (pdfRows.length === 0) {
+      issues.push({
+        code: "PDF_TEXT_NOT_EXTRACTABLE",
+        message: "PDF sem texto extraivel para processamento.",
+        severity: "critical",
+      });
+    }
+
+    pdfRows.forEach((row) => {
+      const hasCode = Boolean(row.codigo_colaborador && row.codigo_colaborador.trim().length > 0);
+      const hasName = Boolean(row.nome_normalizado && row.nome_normalizado.trim().length > 0);
+      const hasPeriod = Boolean(row.period_ref && /^\d{4}-(0[1-9]|1[0-2])$/.test(row.period_ref));
+
+      if (!hasPeriod) {
+        issues.push({
+          code: "MISSING_PERIOD_REF",
+          message: "Pagina sem periodo valido para processamento.",
+          severity: "critical",
+          row: row.page_index,
+        });
+        return;
+      }
+
+      if (!hasCode && !hasName) {
+        issues.push({
+          code: "MISSING_EMPLOYEE_CODE",
+          message: "Pagina sem codigo do colaborador e sem nome utilizavel para fallback.",
+          severity: "critical",
+          row: row.page_index,
+        });
+        return;
+      }
+
+      rows.push(row);
+    });
+  } else if (sourceFormat === "json") {
     let parsedJson: unknown;
 
     try {

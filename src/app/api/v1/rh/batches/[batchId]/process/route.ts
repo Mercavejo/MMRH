@@ -65,6 +65,13 @@ async function loadBatch(batchId: string) {
       routingAmbiguousCount: batches.routingAmbiguousCount,
       routingBlockedReason: batches.routingBlockedReason,
       routingProcessedAt: batches.routingProcessedAt,
+      publicationStatus: batches.publicationStatus,
+      publicationAttempts: batches.publicationAttempts,
+      publishedAt: batches.publishedAt,
+      publishedBy: batches.publishedBy,
+      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
+      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
+      lastPublicationError: batches.lastPublicationError,
     })
     .from(batches)
     .where(eq(batches.id, batchId))
@@ -225,6 +232,7 @@ export async function POST(
       .update(batches)
       .set({
         routingStatus: result.routing_status,
+        routingManifest: result.items,
         routingMatchedCount: result.matched_documents,
         routingPendingCount: result.pending_documents,
         routingFailedCount: result.failed_documents,

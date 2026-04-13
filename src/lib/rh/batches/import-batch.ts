@@ -14,6 +14,16 @@ function normalizeUuidOrRandom(value: string): string {
   return uuidPattern.test(value) ? value : randomUUID();
 }
 
+function resolveOrganizationalUnit(summary: Record<string, unknown>): string | null {
+  const raw = summary.organizational_unit;
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 export async function writeBatchImportAudit(params: {
   tenantId: string;
   actorId: string;
@@ -55,6 +65,9 @@ export async function persistValidatedBatchImport(params: {
       fileSizeBytes: params.validation.file_size_bytes,
       mimeType: params.validation.mime_type,
       sourceFormat: params.validation.summary.source_format,
+      organizationalUnit: resolveOrganizationalUnit(
+        params.validation.summary as unknown as Record<string, unknown>,
+      ),
       validationStatus: params.validation.validation_status,
       validationSummary: params.validation.summary,
       routingStatus: "pending",

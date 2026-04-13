@@ -42,26 +42,15 @@ function maskEmail(value: string): string {
   return `${firstChar}***@${domainPart}`;
 }
 
-const ROLE_BASED_ADDITIONAL_BLOCKS: Record<RbacRole, Set<string>> = {
-  admin_plataforma: new Set([]), // admins see everything (except always-blocked)
-  rh_gestor: new Set([]), // no additional restrictions
-  rh_operator: new Set([]), // no additional restrictions
-  colaborador: new Set([]), // role documented but no additional blocking for now
-  suporte: new Set([]), // role documented but no additional blocking for now
-};
-
 function minimizeObject(
   payload: Record<string, unknown>,
   minimizationProfile: MinimizationProfile,
-  role?: RbacRole,
 ): Record<string, unknown> {
   if (!payload || typeof payload !== "object") {
     return {};
   }
 
   const next: Record<string, unknown> = {};
-  // NOTE: Role parameter is accepted for future AC2 compliance audit logging.
-  // Role-based field filtering not yet implemented; all roles share minimizationProfile rules.
 
   for (const [key, rawValue] of Object.entries(payload)) {
     const normalizedKey = key.toLowerCase();
@@ -96,5 +85,5 @@ export function minimizeDataForRole<T extends Record<string, unknown>>(
     role: RbacRole;
   },
 ): Partial<T> {
-  return minimizeObject(payload, params.minimizationProfile, params.role) as Partial<T>;
+  return minimizeObject(payload, params.minimizationProfile) as Partial<T>;
 }

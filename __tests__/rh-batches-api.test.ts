@@ -362,6 +362,8 @@ describe("rh batch import api", () => {
     expect(response.status).toBe(200);
     expect(body.data.routing_status).toBe("blocked");
     expect(body.data.ambiguous_documents).toBe(2);
+    expect(body.data.items[0].blocked_reason_code).toBeTruthy();
+    expect(body.data.items[0].blocked_reason_message).toBeTruthy();
     expect(writeBatchRoutingAuditMock).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId: SESSION_TENANT_ID,
@@ -493,6 +495,40 @@ describe("rh batch import api", () => {
         body: JSON.stringify({
           idempotency_key: "idem-key-123",
           reprocess_all_eligible: false,
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects reprocess payload when both selection modes are provided", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          tenantId: SESSION_TENANT_ID,
+          validationStatus: "validated",
+        },
+      ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          exception_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+          reprocess_all_eligible: true,
+          idempotency_key: "idem-key-123",
         }),
       },
     );

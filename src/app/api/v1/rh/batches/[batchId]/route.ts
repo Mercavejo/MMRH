@@ -121,6 +121,7 @@ export async function GET(
     .select({
       id: batches.id,
       tenantId: batches.tenantId,
+      validationStatus: batches.validationStatus,
       routingStatus: batches.routingStatus,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
@@ -129,6 +130,13 @@ export async function GET(
       routingAmbiguousCount: batches.routingAmbiguousCount,
       routingBlockedReason: batches.routingBlockedReason,
       routingProcessedAt: batches.routingProcessedAt,
+      publicationStatus: batches.publicationStatus,
+      publicationAttempts: batches.publicationAttempts,
+      publishedAt: batches.publishedAt,
+      publishedBy: batches.publishedBy,
+      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
+      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
+      lastPublicationError: batches.lastPublicationError,
     })
     .from(batches)
     .where(eq(batches.id, paramsParsed.data.batchId))

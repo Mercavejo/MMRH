@@ -8,7 +8,15 @@ export const BATCH_ROUTING_STATUSES = [
   "failed",
 ] as const;
 
+export const BATCH_PUBLICATION_STATUSES = [
+  "pending",
+  "publishing",
+  "published",
+  "failed",
+] as const;
+
 export type BatchRoutingStatus = (typeof BATCH_ROUTING_STATUSES)[number];
+export type BatchPublicationStatus = (typeof BATCH_PUBLICATION_STATUSES)[number];
 
 export const batchRoutingProgressSchema = z.object({
   batch_id: z.string().trim().min(1),
@@ -22,6 +30,13 @@ export const batchRoutingProgressSchema = z.object({
   blocked_documents: z.number().int().nonnegative(),
   processed_at: z.string().datetime().nullable(),
   blocked_reason: z.string().trim().nullable(),
+  publication_status: z.enum(BATCH_PUBLICATION_STATUSES).nullable().optional(),
+  publication_attempts: z.number().int().nonnegative().optional(),
+  published_at: z.string().datetime().nullable().optional(),
+  published_by: z.string().trim().nullable().optional(),
+  last_publication_correlation_id: z.string().trim().nullable().optional(),
+  last_publication_idempotency_key: z.string().trim().nullable().optional(),
+  last_publication_error: z.string().trim().nullable().optional(),
 });
 
 export type BatchRoutingProgress = z.infer<typeof batchRoutingProgressSchema>;
@@ -39,6 +54,13 @@ export function buildEmptyBatchRoutingProgress(): BatchRoutingProgress {
     blocked_documents: 0,
     processed_at: null,
     blocked_reason: null,
+    publication_status: "pending",
+    publication_attempts: 0,
+    published_at: null,
+    published_by: null,
+    last_publication_correlation_id: null,
+    last_publication_idempotency_key: null,
+    last_publication_error: null,
   };
 }
 
@@ -59,6 +81,13 @@ export function buildPendingBatchRoutingProgress(params: {
     blocked_documents: 0,
     processed_at: null,
     blocked_reason: null,
+    publication_status: "pending",
+    publication_attempts: 0,
+    published_at: null,
+    published_by: null,
+    last_publication_correlation_id: null,
+    last_publication_idempotency_key: null,
+    last_publication_error: null,
   };
 }
 
@@ -73,6 +102,13 @@ export function buildBatchRoutingProgressFromRecord(record: {
   routingAmbiguousCount: number;
   routingBlockedReason: string | null;
   routingProcessedAt: Date | string | null;
+  publicationStatus?: BatchPublicationStatus | null;
+  publicationAttempts?: number | null;
+  publishedAt?: Date | string | null;
+  publishedBy?: string | null;
+  lastPublicationCorrelationId?: string | null;
+  lastPublicationIdempotencyKey?: string | null;
+  lastPublicationError?: string | null;
 }): BatchRoutingProgress {
   return {
     batch_id: record.id,
@@ -91,5 +127,17 @@ export function buildBatchRoutingProgressFromRecord(record: {
           ? record.routingProcessedAt
           : null,
     blocked_reason: record.routingBlockedReason,
+    publication_status: record.publicationStatus ?? "pending",
+    publication_attempts: record.publicationAttempts ?? 0,
+    published_at:
+      record.publishedAt instanceof Date
+        ? record.publishedAt.toISOString()
+        : typeof record.publishedAt === "string"
+          ? record.publishedAt
+          : null,
+    published_by: record.publishedBy ?? null,
+    last_publication_correlation_id: record.lastPublicationCorrelationId ?? null,
+    last_publication_idempotency_key: record.lastPublicationIdempotencyKey ?? null,
+    last_publication_error: record.lastPublicationError ?? null,
   };
 }

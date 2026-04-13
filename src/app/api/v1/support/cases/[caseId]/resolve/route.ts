@@ -1,0 +1,184 @@
+import { and, eq } from "drizzle-orm";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { errorResponse, successResponse } from "@/lib/api/response";
+import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
+import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
+import { validateSession } from "@/lib/auth/session";
+import { db } from "@/lib/db/client";
+import { userTenantMappings } from "@/lib/db/schema";
+import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { SupportCaseError } from "@/modules/support/application/get-support-case";
+import { resolveSupportCase } from "@/modules/support/application/resolve-support-case";
+
+const paramsSchema = z.object({ caseId: z.string().uuid() });
+
+const payloadSchema = z.object({
+  cause_code: z.string().trim().min(1),
+  action_applied: z.string().trim().min(1),
+  result_status: z.enum(["resolved", "partial", "failed"]),
+  recovery: z
+    .object({
+      batch_id: z.string().uuid(),
+      exception_ids: z.array(z.string().uuid()).optional(),
+      idempotency_key: z.string().trim().min(1),
+    })
+    .optional(),
+});
+
+function withCorrelationHeader(response: NextResponse, correlationId: string) {
+  response.headers.set(CORRELATION_ID_HEADER, correlationId);
+  return response;
+}
+
+function jsonResponse<T>(
+  body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
+  correlationId: string,
+  init?: ResponseInit,
+) {
+  return withCorrelationHeader(NextResponse.json(body, init), correlationId);
+}
+
+async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
+  const mappings = await db
+    .select({ role: userTenantMappings.role })
+    .from(userTenantMappings)
+    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
+    .limit(1);
+
+  return mappings[0]?.role as RbacRole | undefined;
+}
+
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ caseId: string }> },
+) {
+  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
+  const parsedParams = paramsSchema.safeParse(await context.params);
+  if (!parsedParams.success) {
+    return jsonResponse(
+      errorResponse("VALIDATION_ERROR", "caseId invalido.", correlationId, {
+        issues: parsedParams.error.issues,
+      }),
+      correlationId,
+      { status: 400 },
+    );
+  }
+
+  const contentType = request.headers.get("content-type") ?? "";
+  let rawBody: Record<string, unknown> = {};
+
+  if (contentType.includes("application/json")) {
+    rawBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  } else if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    rawBody = {
+      cause_code: formData.get("cause_code")?.toString(),
+      action_applied: formData.get("action_applied")?.toString(),
+      result_status: formData.get("result_status")?.toString(),
+      recovery: formData.get("recovery_batch_id")
+        ? {
+            batch_id: formData.get("recovery_batch_id")?.toString(),
+            idempotency_key: formData.get("recovery_idempotency_key")?.toString(),
+          }
+        : undefined,
+    };
+  }
+
+  const parsedBody = payloadSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return jsonResponse(
+      errorResponse("VALIDATION_ERROR", "Payload invalido.", correlationId, {
+        issues: parsedBody.error.issues,
+      }),
+      correlationId,
+      { status: 400 },
+    );
+  }
+
+  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (!sessionToken) {
+    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
+      status: 401,
+    });
+  }
+
+  const session = await validateSession(sessionToken);
+  if (!session) {
+    return jsonResponse(
+      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
+      correlationId,
+      { status: 401 },
+    );
+  }
+
+  const role = await resolveTenantRole(session.userId, session.tenantId);
+  if (!role) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  try {
+    assertTenantAction({
+      actorRole: role,
+      actorTenantId: session.tenantId,
+      targetTenantId: session.tenantId,
+      action: RBAC_ACTIONS.supportDiagnose,
+    });
+  } catch (error) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
+        cause: (error as Error).message,
+      }),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  const allowedRoles: RbacRole[] = ["suporte", "admin_plataforma"];
+  if (!allowedRoles.includes(role)) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Perfil sem permissao para resolver caso de suporte.", correlationId),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  try {
+    const resolved = await resolveSupportCase({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      caseId: parsedParams.data.caseId,
+      correlationId,
+      causeCode: parsedBody.data.cause_code,
+      actionApplied: parsedBody.data.action_applied,
+      resultStatus: parsedBody.data.result_status,
+      recovery: parsedBody.data.recovery
+        ? {
+            batchId: parsedBody.data.recovery.batch_id,
+            exceptionIds: parsedBody.data.recovery.exception_ids,
+            idempotencyKey: parsedBody.data.recovery.idempotency_key,
+          }
+        : undefined,
+    });
+
+    return jsonResponse(successResponse(resolved, correlationId, session.tenantId), correlationId);
+  } catch (error) {
+    if (error instanceof SupportCaseError) {
+      return jsonResponse(
+        errorResponse(error.code, error.message, correlationId, error.details),
+        correlationId,
+        { status: error.statusCode },
+      );
+    }
+
+    return jsonResponse(
+      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao resolver caso de suporte.", correlationId),
+      correlationId,
+      { status: 500 },
+    );
+  }
+}

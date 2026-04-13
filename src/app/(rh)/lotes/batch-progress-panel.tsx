@@ -14,6 +14,8 @@ export function BatchProgressPanel(props: {
   onProcess?: () => void | Promise<void>;
   onReprocess?: () => void | Promise<void>;
   isReprocessing?: boolean;
+  onPublish?: () => void | Promise<void>;
+  isPublishing?: boolean;
 }) {
   const summary = props.summary ?? buildEmptyBatchRoutingProgress();
   const processedDocuments =
@@ -27,6 +29,12 @@ export function BatchProgressPanel(props: {
     Boolean(props.onReprocess) &&
     summary.batch_id.length > 0 &&
     (summary.routing_status === "blocked" || summary.routing_status === "failed" || summary.routing_status === "completed");
+  const canStartPublish =
+    Boolean(props.onPublish) &&
+    summary.batch_id.length > 0 &&
+    summary.routing_status === "completed" &&
+    summary.publication_status !== "publishing" &&
+    summary.publication_status !== "published";
 
   return (
     <Container maxWidth="lg" sx={{ pb: 4 }}>
@@ -51,6 +59,10 @@ export function BatchProgressPanel(props: {
             <Chip label={`Pendentes: ${summary.pending_documents}`} variant="outlined" />
             <Chip label={`Falhas: ${summary.failed_documents}`} variant="outlined" />
             <Chip label={`Ambiguidades: ${summary.ambiguous_documents}`} variant="outlined" />
+            <Chip
+              label={`Publicacao: ${summary.publication_status === "published" ? "publicado" : summary.publication_status === "publishing" ? "publicando" : summary.publication_status === "failed" ? "falha" : "pendente"}`}
+              variant="outlined"
+            />
           </Stack>
 
           <LinearProgress
@@ -90,6 +102,18 @@ export function BatchProgressPanel(props: {
             </Alert>
           ) : null}
 
+          {summary.publication_status === "published" ? (
+            <Alert severity="success" role="status">
+              Lote publicado com sucesso. Os documentos ficam disponiveis no portal na proxima leitura.
+            </Alert>
+          ) : null}
+
+          {summary.publication_status === "failed" ? (
+            <Alert severity="error" role="alert">
+              {summary.last_publication_error ?? "A publicacao do lote nao foi concluida."}
+            </Alert>
+          ) : null}
+
           <Button
             type="button"
             variant="outlined"
@@ -102,12 +126,22 @@ export function BatchProgressPanel(props: {
 
           <Button
             type="button"
-            variant="contained"
+            variant="outlined"
             onClick={props.onReprocess}
             disabled={!canStartReprocess || props.isReprocessing}
             sx={{ alignSelf: "flex-start" }}
           >
             {props.isReprocessing ? "Reprocessando itens elegiveis..." : "Reprocessar itens elegiveis"}
+          </Button>
+
+          <Button
+            type="button"
+            variant="contained"
+            onClick={props.onPublish}
+            disabled={!canStartPublish || props.isPublishing}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            {props.isPublishing ? "Publicando lote..." : "Publicar lote"}
           </Button>
         </Stack>
       </Paper>

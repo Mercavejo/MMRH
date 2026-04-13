@@ -394,13 +394,17 @@ export async function reprocessBatchExceptions(input: {
     .where(and(eq(exceptions.batchId, input.batchId), eq(exceptions.tenantId, input.tenantId)));
 
   const rowsMap = new Map(rows.map((row) => [row.id, row]));
-  const selectedRows = input.exceptionIds?.length
-    ? input.exceptionIds
+  const uniqueExceptionIds = input.exceptionIds?.length
+    ? Array.from(new Set(input.exceptionIds))
+    : undefined;
+
+  const selectedRows = uniqueExceptionIds?.length
+    ? uniqueExceptionIds
         .map((exceptionId) => rowsMap.get(exceptionId))
         .filter((row): row is (typeof rows)[number] => Boolean(row))
     : rows;
 
-  if (input.exceptionIds?.length && selectedRows.length !== input.exceptionIds.length) {
+  if (uniqueExceptionIds?.length && selectedRows.length !== uniqueExceptionIds.length) {
     throw new ExceptionWorkflowError(
       "EXCEPTION_NOT_FOUND",
       "Uma ou mais excecoes nao pertencem ao lote informado.",
@@ -414,71 +418,78 @@ export async function reprocessBatchExceptions(input: {
   let totalResolved = 0;
   let totalFailed = 0;
 
-  for (const row of selectedRows) {
-    const previousState = row.currentState as ExceptionState;
-    const correctionResult = row.correctionResult as ExceptionCorrectionResult | null;
+  await db.transaction(async (tx) => {
+    for (const row of selectedRows) {
+      const previousState = row.currentState as ExceptionState;
+      const correctionResult = row.correctionResult as ExceptionCorrectionResult | null;
 
-    if (!isExceptionEligibleForReprocess({ current_state: previousState, correction_result: correctionResult })) {
-      itemResults.push({
-        exception_id: row.id,
-        previous_state: previousState,
-        current_state: previousState,
-        status: "skipped",
-        reason: "Item nao elegivel para reprocessamento.",
-      });
-      if (previousState !== "resolved") {
-        totalFailed += 1;
-      } else {
-        totalResolved += 1;
+      if (!isExceptionEligibleForReprocess({ current_state: previousState, correction_result: correctionResult })) {
+        itemResults.push({
+          exception_id: row.id,
+          previous_state: previousState,
+          current_state: previousState,
+          status: "skipped",
+          reason: "Item nao elegivel para reprocessamento.",
+        });
+        if (previousState !== "resolved") {
+          totalFailed += 1;
+        } else {
+          totalResolved += 1;
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (hasIdempotencyHit(row.lastReprocessIdempotencyKey, input.idempotencyKey)) {
+      if (hasIdempotencyHit(row.lastReprocessIdempotencyKey, input.idempotencyKey)) {
+        itemResults.push({
+          exception_id: row.id,
+          previous_state: previousState,
+          current_state: previousState,
+          status: "idempotent",
+          reason: "Requisicao idempotente reaproveitada.",
+        });
+        if (previousState === "resolved") {
+          totalResolved += 1;
+        }
+        continue;
+      }
+
+      const now = new Date();
+      await tx
+        .update(exceptions)
+        .set({
+          currentState: "resolved",
+          resolvedBy: input.actorId,
+          resolvedAt: now,
+          updatedAt: now,
+          reprocessAttempts: (row.reprocessAttempts ?? 0) + 1,
+          lastReprocessAt: now,
+          lastReprocessCorrelationId: input.correlationId,
+          lastReprocessIdempotencyKey: input.idempotencyKey,
+        })
+        .where(and(eq(exceptions.id, row.id), eq(exceptions.tenantId, input.tenantId)));
+
+      totalReprocessed += 1;
+      totalResolved += 1;
       itemResults.push({
         exception_id: row.id,
         previous_state: previousState,
         current_state: "resolved",
-        status: "idempotent",
-        reason: "Requisicao idempotente reaproveitada.",
+        status: "reprocessed",
+        reason: null,
       });
-      totalResolved += 1;
-      continue;
     }
-
-    const now = new Date();
-    await db
-      .update(exceptions)
-      .set({
-        currentState: "resolved",
-        resolvedBy: input.actorId,
-        resolvedAt: now,
-        updatedAt: now,
-        reprocessAttempts: (row.reprocessAttempts ?? 0) + 1,
-        lastReprocessAt: now,
-        lastReprocessCorrelationId: input.correlationId,
-        lastReprocessIdempotencyKey: input.idempotencyKey,
-      })
-      .where(and(eq(exceptions.id, row.id), eq(exceptions.tenantId, input.tenantId)));
-
-    totalReprocessed += 1;
-    totalResolved += 1;
-    itemResults.push({
-      exception_id: row.id,
-      previous_state: previousState,
-      current_state: "resolved",
-      status: "reprocessed",
-      reason: null,
-    });
-  }
+  });
 
   const totalRequested = selectedRows.length;
+  let totalRemaining = 0;
   const totalEligible = selectedRows.filter((row) =>
     isExceptionEligibleForReprocess({
       current_state: row.currentState as ExceptionState,
       correction_result: row.correctionResult as ExceptionCorrectionResult | null,
     }),
   ).length;
+
+  totalRemaining = Math.max(0, totalRequested - totalResolved);
 
   return {
     batch_id: input.batchId,
@@ -487,7 +498,7 @@ export async function reprocessBatchExceptions(input: {
     total_eligible: totalEligible,
     total_reprocessed: totalReprocessed,
     total_resolved: totalResolved,
-    total_remaining: Math.max(0, totalRequested - totalResolved),
+    total_remaining: totalRemaining,
     total_failed: totalFailed,
     items: itemResults,
     processed_at: processedAt,

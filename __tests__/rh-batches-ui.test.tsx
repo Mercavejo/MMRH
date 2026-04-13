@@ -102,6 +102,35 @@ describe("rh batch import ui", () => {
     expect(html).toContain("Iniciar roteamento");
   });
 
+  it("renders publish action and success state", () => {
+    const html = renderToStaticMarkup(
+      <BatchProgressPanel
+        summary={{
+          ...buildPendingBatchRoutingProgress({
+            batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            tenantId: "11111111-1111-4111-8111-111111111111",
+            totalDocuments: 2,
+          }),
+          routing_status: "completed",
+          publication_status: "published",
+          publication_attempts: 1,
+          published_at: "2026-04-13T12:05:00.000Z",
+          published_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          last_publication_correlation_id: "11111111-1111-4111-8111-111111111111",
+          last_publication_idempotency_key: "idem-123456",
+          last_publication_error: null,
+        }}
+        statusMessage="Lote publicado com 2 documento(s)."
+        statusTone="success"
+        onPublish={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Publicar lote");
+    expect(html).toContain("Lote publicado com sucesso.");
+    expect(html).toContain("Publicacao: publicado");
+  });
+
   it("renders blocked routing guidance", () => {
     const html = renderToStaticMarkup(
       <BatchProgressPanel

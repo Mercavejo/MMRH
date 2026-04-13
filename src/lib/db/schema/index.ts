@@ -9,4 +9,7 @@ export * from "./employee-documents";
 export * from "./document-contestations";
 export * from "./employee-notifications";
 export * from "./batches";
+export * from "./exceptions";
+export * from "./exception-actions";
+export * from "./external-ingestions";
 
