@@ -1,15 +1,13 @@
-import { createHmac } from "node:crypto";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { signHmacSha256Hex } from "@/lib/security/hmac-signature";
 
 const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
 const PAYLOAD_PATH = "/api/v1/webhooks/integrations";
 const INTEGRATION_SECRET = "test-integration-secret";
 
 function buildSignature(params: { method: string; path: string; timestamp: string; body: string }) {
-  return createHmac("sha256", INTEGRATION_SECRET)
-    .update([params.method, params.path, params.timestamp, params.body].join("\n"))
-    .digest("hex");
+  return signHmacSha256Hex(INTEGRATION_SECRET, [params.method, params.path, params.timestamp, params.body].join("\n"));
 }
 
 const {
@@ -125,7 +123,7 @@ describe("external ingestions api", () => {
   });
 
   it("accepts authorized external intake and returns 202", async () => {
-    const timestamp = "2026-04-13T12:00:00.000Z";
+    const timestamp = new Date().toISOString();
     const requestBody = JSON.stringify({
       tenant_id: SESSION_TENANT_ID,
       contract_version: "v1",
@@ -203,7 +201,7 @@ describe("external ingestions api", () => {
       source_reference: "REF-2026-04",
       idempotency_key: "idem-12345678",
     });
-    const timestamp = "2026-04-13T12:00:00.000Z";
+    const timestamp = new Date().toISOString();
 
     const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
       method: "POST",
@@ -231,7 +229,7 @@ describe("external ingestions api", () => {
   });
 
   it("returns 409 for duplicate intake", async () => {
-    const timestamp = "2026-04-13T12:00:00.000Z";
+    const timestamp = new Date().toISOString();
     const body = JSON.stringify({
       tenant_id: SESSION_TENANT_ID,
       contract_version: "v1",
@@ -278,7 +276,7 @@ describe("external ingestions api", () => {
   });
 
   it("rejects unsupported contract version with structured validation error", async () => {
-    const timestamp = "2026-04-13T12:00:00.000Z";
+    const timestamp = new Date().toISOString();
     const body = JSON.stringify({
       tenant_id: SESSION_TENANT_ID,
       contract_version: "v999",
@@ -314,7 +312,7 @@ describe("external ingestions api", () => {
   });
 
   it("rejects schema-invalid payload with structured validation error", async () => {
-    const timestamp = "2026-04-13T12:00:00.000Z";
+    const timestamp = new Date().toISOString();
     const body = JSON.stringify({
       tenant_id: SESSION_TENANT_ID,
       contract_version: "v1",
@@ -346,6 +344,41 @@ describe("external ingestions api", () => {
     expect(response.status).toBe(400);
     expect(responseBody.error.code).toBe("VALIDATION_ERROR");
     expect(responseBody.error.details.failure_code).toBe("INVALID_PAYLOAD");
+    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects expired integration timestamp", async () => {
+    const expiredTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: { period: "2026-04", documents: 15 },
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": expiredTimestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp: expiredTimestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const responseBody = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(responseBody.error.code).toBe("FORBIDDEN");
     expect(registerExternalIngestionMock).not.toHaveBeenCalled();
   });
 

@@ -7,3 +7,7 @@ ALTER TABLE "external_ingestions"
   ADD COLUMN "validation_result" "external_ingestion_validation_result" DEFAULT 'success' NOT NULL,
   ADD COLUMN "validation_failure_code" "external_ingestion_failure_code",
   ADD COLUMN "validated_at" timestamp with time zone DEFAULT now() NOT NULL;
+--> statement-breakpoint
+UPDATE "external_ingestions"
+SET "validated_at" = "received_at"
+WHERE "validated_at" IS DISTINCT FROM "received_at";

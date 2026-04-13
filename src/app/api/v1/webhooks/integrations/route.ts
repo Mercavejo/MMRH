@@ -1,4 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -9,6 +8,7 @@ import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { isTimestampWithinSkew, isValidHmacSignature, signHmacSha256Hex } from "@/lib/security/hmac-signature";
 import { listExternalIngestions, ExternalIngestionError } from "@/modules/integrations/application/list-external-ingestions";
 import { registerExternalIngestion } from "@/modules/integrations/application/register-external-ingestion";
 import {
@@ -24,6 +24,8 @@ const intakeSchema = z.object({
   idempotency_key: z.string().trim().min(8).max(128),
   payload_summary: z.record(z.string(), z.unknown()).optional(),
 });
+
+const MAX_INTEGRATION_SIGNATURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 const querySchema = z
   .object({
@@ -77,21 +79,6 @@ function buildSignedWebhookPayload(params: {
   return [params.method, params.path, params.timestamp, params.body].join("\n");
 }
 
-function signWebhookPayload(secret: string, payload: string): string {
-  return createHmac("sha256", secret).update(payload).digest("hex");
-}
-
-function isValidSignature(expected: string, provided: string): boolean {
-  const expectedBuffer = Buffer.from(expected);
-  const providedBuffer = Buffer.from(provided);
-
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, providedBuffer);
-}
-
 async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
   const mappings = await db
     .select({ role: userTenantMappings.role })
@@ -129,6 +116,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!isTimestampWithinSkew(timestamp, MAX_INTEGRATION_SIGNATURE_CLOCK_SKEW_MS)) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Timestamp de integracao expirado ou invalido.", correlationId, {
+        source_system: sourceSystem,
+      }),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
   let parsedBodyValue: unknown;
 
   try {
@@ -148,7 +145,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const expectedSignature = signWebhookPayload(
+  const expectedSignature = signHmacSha256Hex(
     secret,
     buildSignedWebhookPayload({
       method: request.method,
@@ -158,7 +155,7 @@ export async function POST(request: NextRequest) {
     }),
   );
 
-  if (!isValidSignature(expectedSignature, signature)) {
+  if (!isValidHmacSignature(expectedSignature, signature)) {
     return jsonResponse(
       errorResponse("FORBIDDEN", "Assinatura de integracao invalida.", correlationId, {
         source_system: sourceSystem,
