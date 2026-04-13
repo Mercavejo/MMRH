@@ -17,6 +17,8 @@ const {
   persistValidatedBatchImportMock,
   writeBatchImportAuditMock,
   writeBatchRoutingAuditMock,
+  writeBatchReprocessAuditMock,
+  reprocessExceptionsForBatchMock,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
   dbSelectMock: vi.fn(),
@@ -30,6 +32,8 @@ const {
   persistValidatedBatchImportMock: vi.fn(),
   writeBatchImportAuditMock: vi.fn(),
   writeBatchRoutingAuditMock: vi.fn(),
+  writeBatchReprocessAuditMock: vi.fn(),
+  reprocessExceptionsForBatchMock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
@@ -46,6 +50,14 @@ vi.mock("@/lib/rh/batches/import-batch", () => ({
 
 vi.mock("@/lib/rh/batches/batch-routing-audit", () => ({
   writeBatchRoutingAudit: writeBatchRoutingAuditMock,
+}));
+
+vi.mock("@/lib/rh/batches/reprocess-audit", () => ({
+  writeBatchReprocessAudit: writeBatchReprocessAuditMock,
+}));
+
+vi.mock("@/modules/exceptions/application/reprocess-exceptions", () => ({
+  reprocessExceptionsForBatch: reprocessExceptionsForBatchMock,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -67,11 +79,28 @@ vi.mock("@/lib/db/client", () => ({
 
 import { POST } from "@/app/api/v1/rh/batches/route";
 import { POST as PROCESS_BATCH } from "@/app/api/v1/rh/batches/[batchId]/process/route";
+import { POST as REPROCESS_BATCH } from "@/app/api/v1/rh/batches/[batchId]/reprocess/route";
 import { GET as GET_BATCH_DETAILS } from "@/app/api/v1/rh/batches/[batchId]/route";
 
 describe("rh batch import api", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+
+    dbWhereMock.mockReturnValue({
+      limit: dbLimitMock,
+    });
+    dbFromMock.mockReturnValue({
+      where: dbWhereMock,
+    });
+    dbSelectMock.mockReturnValue({
+      from: dbFromMock,
+    });
+    dbSetMock.mockReturnValue({
+      where: dbUpdateWhereMock,
+    });
+    dbUpdateMock.mockReturnValue({
+      set: dbSetMock,
+    });
 
     validateSessionMock.mockResolvedValue({
       userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -107,6 +136,27 @@ describe("rh batch import api", () => {
     persistValidatedBatchImportMock.mockResolvedValue({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" });
     dbUpdateWhereMock.mockResolvedValue(undefined);
     writeBatchRoutingAuditMock.mockResolvedValue(undefined);
+    writeBatchReprocessAuditMock.mockResolvedValue(undefined);
+    reprocessExceptionsForBatchMock.mockResolvedValue({
+      batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      idempotency_key: "idem-key-123",
+      total_requested: 1,
+      total_eligible: 1,
+      total_reprocessed: 1,
+      total_resolved: 1,
+      total_remaining: 0,
+      total_failed: 0,
+      items: [
+        {
+          exception_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          previous_state: "in-treatment",
+          current_state: "resolved",
+          status: "reprocessed",
+          reason: null,
+        },
+      ],
+      processed_at: "2026-04-13T12:00:00.000Z",
+    });
   });
 
   it("imports a valid batch report with tenant scoped success", async () => {
@@ -369,6 +419,163 @@ describe("rh batch import api", () => {
     );
 
     const response = await GET_BATCH_DETAILS(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(403);
+  });
+
+  it("reprocesses eligible exceptions with idempotency key", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          tenantId: SESSION_TENANT_ID,
+          validationStatus: "validated",
+        },
+      ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+          "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        },
+        body: JSON.stringify({
+          exception_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+          reprocess_all_eligible: false,
+          idempotency_key: "idem-key-123",
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
+    expect(body.data.total_reprocessed).toBe(1);
+    expect(reprocessExceptionsForBatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        tenantId: SESSION_TENANT_ID,
+        idempotencyKey: "idem-key-123",
+        exceptionIds: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+      }),
+    );
+    expect(writeBatchReprocessAuditMock).toHaveBeenCalled();
+  });
+
+  it("rejects invalid reprocess payload when no selection mode is provided", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          tenantId: SESSION_TENANT_ID,
+          validationStatus: "validated",
+        },
+      ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          idempotency_key: "idem-key-123",
+          reprocess_all_eligible: false,
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects reprocess when session is missing", async () => {
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          exception_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+          idempotency_key: "idem-key-123",
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects reprocess when role is not rh_operator", async () => {
+    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          exception_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+          idempotency_key: "idem-key-123",
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(403);
+  });
+
+  it("rejects reprocess for batch from another tenant", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          tenantId: OTHER_TENANT_ID,
+          validationStatus: "validated",
+        },
+      ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          reprocess_all_eligible: true,
+          idempotency_key: "idem-key-123",
+        }),
+      },
+    );
+
+    const response = await REPROCESS_BATCH(request, {
       params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
     });
 

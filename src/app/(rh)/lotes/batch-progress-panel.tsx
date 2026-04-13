@@ -12,6 +12,8 @@ export function BatchProgressPanel(props: {
   statusTone?: "info" | "success" | "warning" | "error";
   isProcessing?: boolean;
   onProcess?: () => void | Promise<void>;
+  onReprocess?: () => void | Promise<void>;
+  isReprocessing?: boolean;
 }) {
   const summary = props.summary ?? buildEmptyBatchRoutingProgress();
   const processedDocuments =
@@ -21,6 +23,10 @@ export function BatchProgressPanel(props: {
       ? 0
       : Math.min(100, Math.round((processedDocuments / summary.total_documents) * 100));
   const canStartRouting = Boolean(props.onProcess) && summary.batch_id.length > 0 && summary.routing_status === "pending";
+  const canStartReprocess =
+    Boolean(props.onReprocess) &&
+    summary.batch_id.length > 0 &&
+    (summary.routing_status === "blocked" || summary.routing_status === "failed" || summary.routing_status === "completed");
 
   return (
     <Container maxWidth="lg" sx={{ pb: 4 }}>
@@ -92,6 +98,16 @@ export function BatchProgressPanel(props: {
             sx={{ alignSelf: "flex-start" }}
           >
             {props.isProcessing ? "Processando lote..." : "Iniciar roteamento"}
+          </Button>
+
+          <Button
+            type="button"
+            variant="contained"
+            onClick={props.onReprocess}
+            disabled={!canStartReprocess || props.isReprocessing}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            {props.isReprocessing ? "Reprocessando itens elegiveis..." : "Reprocessar itens elegiveis"}
           </Button>
         </Stack>
       </Paper>

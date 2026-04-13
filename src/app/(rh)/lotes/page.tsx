@@ -145,6 +145,7 @@ export default function RhBatchImportPage() {
   const [routingProgress, setRoutingProgress] = useState<BatchRoutingProgress | null>(null);
   const [routingNotice, setRoutingNotice] = useState<RoutingNotice>(null);
   const [routingInProgress, setRoutingInProgress] = useState(false);
+  const [reprocessInProgress, setReprocessInProgress] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -255,6 +256,53 @@ export default function RhBatchImportPage() {
     setRoutingInProgress(false);
   }
 
+  async function handleReprocessEligible() {
+    if (!routingProgress?.batch_id || reprocessInProgress) {
+      return;
+    }
+
+    setReprocessInProgress(true);
+    setRoutingNotice({
+      tone: "info",
+      message: "Reprocessamento seletivo em andamento para itens elegiveis.",
+    });
+
+    const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/reprocess`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reprocess_all_eligible: true,
+        idempotency_key: crypto.randomUUID(),
+      }),
+    });
+
+    const payload = (await response.json()) as {
+      data: {
+        total_reprocessed: number;
+        total_remaining: number;
+      } | null;
+      error: { message: string } | null;
+    };
+
+    if (!response.ok || !payload.data) {
+      setRoutingNotice({
+        tone: "error",
+        message: payload.error?.message ?? "Nao foi possivel executar o reprocessamento seletivo.",
+      });
+      setReprocessInProgress(false);
+      return;
+    }
+
+    setRoutingNotice({
+      tone: payload.data.total_reprocessed > 0 ? "success" : "warning",
+      message:
+        payload.data.total_reprocessed > 0
+          ? `Reprocessamento concluido com ${payload.data.total_reprocessed} item(ns) resolvido(s).`
+          : `Nenhum item elegivel foi reprocessado. Restantes: ${payload.data.total_remaining}.`,
+    });
+    setReprocessInProgress(false);
+  }
+
   return (
     <Stack spacing={3}>
       <BatchImportPageView
@@ -268,9 +316,11 @@ export default function RhBatchImportPage() {
       <BatchProgressPanel
         summary={routingProgress}
         isProcessing={routingInProgress}
+        isReprocessing={reprocessInProgress}
         statusTone={routingNotice?.tone ?? undefined}
         statusMessage={routingNotice?.message ?? undefined}
         onProcess={handleProcessRouting}
+        onReprocess={handleReprocessEligible}
       />
     </Stack>
   );
