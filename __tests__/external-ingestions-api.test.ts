@@ -17,6 +17,8 @@ const {
   dbWhereMock,
   dbLimitMock,
   registerExternalIngestionMock,
+  resolveExternalIdentifierMappingForIntakeMock,
+  upsertExternalIdentifierMappingRuleMock,
   listExternalIngestionsMock,
   ExternalIngestionError,
 } = vi.hoisted(() => ({
@@ -26,6 +28,8 @@ const {
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
   registerExternalIngestionMock: vi.fn(),
+  resolveExternalIdentifierMappingForIntakeMock: vi.fn(),
+  upsertExternalIdentifierMappingRuleMock: vi.fn(),
   listExternalIngestionsMock: vi.fn(),
   ExternalIngestionError: class extends Error {
     constructor(
@@ -59,12 +63,22 @@ vi.mock("@/modules/integrations/application/register-external-ingestion", () => 
   ExternalIngestionError,
 }));
 
+vi.mock("@/modules/integrations/application/resolve-external-identifier-mapping", () => ({
+  resolveExternalIdentifierMappingForIntake: resolveExternalIdentifierMappingForIntakeMock,
+  ExternalIngestionError,
+}));
+
+vi.mock("@/modules/integrations/application/upsert-external-identifier-mapping", () => ({
+  upsertExternalIdentifierMappingRule: upsertExternalIdentifierMappingRuleMock,
+  ExternalIngestionError,
+}));
+
 vi.mock("@/modules/integrations/application/list-external-ingestions", () => ({
   listExternalIngestions: listExternalIngestionsMock,
   ExternalIngestionError,
 }));
 
-import { GET, POST } from "@/app/api/v1/webhooks/integrations/route";
+import { GET, POST, PUT } from "@/app/api/v1/webhooks/integrations/route";
 
 describe("external ingestions api", () => {
   beforeEach(() => {
@@ -102,6 +116,25 @@ describe("external ingestions api", () => {
       correlation_id: "11111111-1111-4111-8111-111111111111",
       payload_summary: {},
       timeline: [],
+    });
+
+    resolveExternalIdentifierMappingForIntakeMock.mockResolvedValue({
+      status: "mapped",
+      failure_code: null,
+      recommended_action: null,
+      mapped_employee_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      mapping_version: 1,
+      external_identifier: "EMP-0001",
+    });
+
+    upsertExternalIdentifierMappingRuleMock.mockResolvedValue({
+      tenant_id: SESSION_TENANT_ID,
+      source_system: "payroll-api",
+      external_identifier: "EMP-0001",
+      employee_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      mapping_version: 2,
+      change_type: "update",
+      changed_at: "2026-04-13T12:00:00.000Z",
     });
 
     listExternalIngestionsMock.mockResolvedValue({
@@ -162,6 +195,123 @@ describe("external ingestions api", () => {
         tenantId: SESSION_TENANT_ID,
         sourceSystem: "payroll-api",
         contractVersion: "v1",
+        externalIdentifier: "EMP-0001",
+        mappedEmployeeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        mappingVersion: 1,
+      }),
+    );
+  });
+
+  it("blocks ambiguous mapping with structured conflict error", async () => {
+    const timestamp = new Date().toISOString();
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: {
+        period: "2026-04",
+        documents: 15,
+        external_identifier: "EMP-0001",
+      },
+    });
+
+    resolveExternalIdentifierMappingForIntakeMock.mockResolvedValueOnce({
+      status: "ambiguous",
+      failure_code: "AMBIGUOUS_ASSOCIATION",
+      recommended_action: "Revise o mapeamento na fila de excecao antes de reenviar.",
+      mapped_employee_id: null,
+      mapping_version: null,
+      external_identifier: "EMP-0001",
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const responseBody = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(responseBody.error.code).toBe("AMBIGUOUS_ASSOCIATION");
+    expect(responseBody.error.details.failure_code).toBe("AMBIGUOUS_ASSOCIATION");
+    expect(registerExternalIngestionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: SESSION_TENANT_ID,
+        status: "failed",
+        mappingStatus: "ambiguous",
+        failureCode: "AMBIGUOUS_ASSOCIATION",
+        externalIdentifier: "EMP-0001",
+      }),
+    );
+  });
+
+  it("returns specific not-found mapping error and persists failed intake", async () => {
+    const timestamp = new Date().toISOString();
+    const body = JSON.stringify({
+      tenant_id: SESSION_TENANT_ID,
+      contract_version: "v1",
+      source_reference: "REF-2026-04",
+      idempotency_key: "idem-12345678",
+      payload_summary: {
+        period: "2026-04",
+        documents: 15,
+        employee_external_id: "EXT-0001",
+      },
+    });
+
+    resolveExternalIdentifierMappingForIntakeMock.mockResolvedValueOnce({
+      status: "not-found",
+      failure_code: "MAPPING_NOT_FOUND",
+      recommended_action: "Cadastre o mapeamento do identificador externo para o tenant antes de reenviar.",
+      mapped_employee_id: null,
+      mapping_version: null,
+      external_identifier: "EXT-0001",
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        "x-integration-source": "payroll-api",
+        "x-integration-timestamp": timestamp,
+        "x-integration-signature": buildSignature({
+          method: "POST",
+          path: PAYLOAD_PATH,
+          timestamp,
+          body,
+        }),
+      },
+      body,
+    });
+
+    const response = await POST(request);
+    const responseBody = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(responseBody.error.code).toBe("MAPPING_NOT_FOUND");
+    expect(responseBody.error.details.failure_code).toBe("MAPPING_NOT_FOUND");
+    expect(registerExternalIngestionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: SESSION_TENANT_ID,
+        status: "failed",
+        mappingStatus: "not-found",
+        failureCode: "MAPPING_NOT_FOUND",
+        externalIdentifier: "EXT-0001",
       }),
     );
   });
@@ -420,5 +570,59 @@ describe("external ingestions api", () => {
         sourceSystem: "payroll-api",
       }),
     );
+  });
+
+  it("rejects mapping rule update when role is not authorized", async () => {
+    dbLimitMock.mockResolvedValueOnce([{ role: "rh_operator" }]);
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        cookie: "session_id=token",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+      },
+      body: JSON.stringify({
+        tenant_id: SESSION_TENANT_ID,
+        source_system: "payroll-api",
+        external_identifier: "EMP-0001",
+        employee_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    });
+
+    const response = await PUT(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error.code).toBe("FORBIDDEN");
+    expect(upsertExternalIdentifierMappingRuleMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects mapping rule update when employee_id belongs to another tenant", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "admin_plataforma" }])
+      .mockResolvedValueOnce([]);
+
+    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        cookie: "session_id=token",
+        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+      },
+      body: JSON.stringify({
+        tenant_id: SESSION_TENANT_ID,
+        source_system: "payroll-api",
+        external_identifier: "EMP-0001",
+        employee_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+    });
+
+    const response = await PUT(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error.code).toBe("FORBIDDEN");
+    expect(upsertExternalIdentifierMappingRuleMock).not.toHaveBeenCalled();
   });
 });

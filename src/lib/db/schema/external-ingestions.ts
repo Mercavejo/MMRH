@@ -1,4 +1,4 @@
-import { jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenants } from "./tenants";
 
@@ -15,7 +15,15 @@ export const externalIngestionFailureCodeEnum = pgEnum("external_ingestion_failu
   "INVALID_CONTRACT_VERSION",
   "TENANT_MISMATCH",
   "DUPLICATE_INGESTION",
+  "MAPPING_NOT_FOUND",
+  "AMBIGUOUS_ASSOCIATION",
   "PROCESSING_FAILURE",
+]);
+
+export const externalIngestionMappingStatusEnum = pgEnum("external_ingestion_mapping_status", [
+  "mapped",
+  "ambiguous",
+  "not-found",
 ]);
 
 export const externalIngestionValidationResultEnum = pgEnum("external_ingestion_validation_result", [
@@ -38,6 +46,10 @@ export const externalIngestions = pgTable(
     validationResult: externalIngestionValidationResultEnum("validation_result").notNull().default("success"),
     validationFailureCode: externalIngestionFailureCodeEnum("validation_failure_code"),
     validatedAt: timestamp("validated_at", { withTimezone: true }).notNull().defaultNow(),
+    mappingStatus: externalIngestionMappingStatusEnum("mapping_status").notNull().default("not-found"),
+    mappingVersion: integer("mapping_version"),
+    mappedEmployeeId: uuid("mapped_employee_id"),
+    externalIdentifier: text("external_identifier"),
     payloadSummary: jsonb("payload_summary").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),

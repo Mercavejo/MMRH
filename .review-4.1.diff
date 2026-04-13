@@ -1,0 +1,4743 @@
+diff --git a/__tests__/rh-batches-api.test.ts b/__tests__/rh-batches-api.test.ts
+index e29e9d6..0bc6c7d 100644
+--- a/__tests__/rh-batches-api.test.ts
++++ b/__tests__/rh-batches-api.test.ts
+@@ -504,6 +504,40 @@ describe("rh batch import api", () => {
+     expect(response.status).toBe(400);
+   });
+ 
++  it("rejects reprocess payload when both selection modes are provided", async () => {
++    dbLimitMock
++      .mockResolvedValueOnce([{ role: "rh_operator" }])
++      .mockResolvedValueOnce([
++        {
++          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          tenantId: SESSION_TENANT_ID,
++          validationStatus: "validated",
++        },
++      ]);
++
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({
++          exception_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
++          reprocess_all_eligible: true,
++          idempotency_key: "idem-key-123",
++        }),
++      },
++    );
++
++    const response = await REPROCESS_BATCH(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++
++    expect(response.status).toBe(400);
++  });
++
+   it("rejects reprocess when session is missing", async () => {
+     const request = new NextRequest(
+       "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/reprocess",
+diff --git a/__tests__/rh-batches-ui.test.tsx b/__tests__/rh-batches-ui.test.tsx
+index f1fdcb8..07fd6a1 100644
+--- a/__tests__/rh-batches-ui.test.tsx
++++ b/__tests__/rh-batches-ui.test.tsx
+@@ -102,6 +102,35 @@ describe("rh batch import ui", () => {
+     expect(html).toContain("Iniciar roteamento");
+   });
+ 
++  it("renders publish action and success state", () => {
++    const html = renderToStaticMarkup(
++      <BatchProgressPanel
++        summary={{
++          ...buildPendingBatchRoutingProgress({
++            batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++            tenantId: "11111111-1111-4111-8111-111111111111",
++            totalDocuments: 2,
++          }),
++          routing_status: "completed",
++          publication_status: "published",
++          publication_attempts: 1,
++          published_at: "2026-04-13T12:05:00.000Z",
++          published_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++          last_publication_correlation_id: "11111111-1111-4111-8111-111111111111",
++          last_publication_idempotency_key: "idem-123456",
++          last_publication_error: null,
++        }}
++        statusMessage="Lote publicado com 2 documento(s)."
++        statusTone="success"
++        onPublish={vi.fn()}
++      />,
++    );
++
++    expect(html).toContain("Publicar lote");
++    expect(html).toContain("Lote publicado com sucesso.");
++    expect(html).toContain("Publicacao: publicado");
++  });
++
+   it("renders blocked routing guidance", () => {
+     const html = renderToStaticMarkup(
+       <BatchProgressPanel
+diff --git a/src/app/(rh)/lotes/batch-progress-panel.tsx b/src/app/(rh)/lotes/batch-progress-panel.tsx
+index 2869dda..656d18a 100644
+--- a/src/app/(rh)/lotes/batch-progress-panel.tsx
++++ b/src/app/(rh)/lotes/batch-progress-panel.tsx
+@@ -14,6 +14,8 @@ export function BatchProgressPanel(props: {
+   onProcess?: () => void | Promise<void>;
+   onReprocess?: () => void | Promise<void>;
+   isReprocessing?: boolean;
++  onPublish?: () => void | Promise<void>;
++  isPublishing?: boolean;
+ }) {
+   const summary = props.summary ?? buildEmptyBatchRoutingProgress();
+   const processedDocuments =
+@@ -27,6 +29,12 @@ export function BatchProgressPanel(props: {
+     Boolean(props.onReprocess) &&
+     summary.batch_id.length > 0 &&
+     (summary.routing_status === "blocked" || summary.routing_status === "failed" || summary.routing_status === "completed");
++  const canStartPublish =
++    Boolean(props.onPublish) &&
++    summary.batch_id.length > 0 &&
++    summary.routing_status === "completed" &&
++    summary.publication_status !== "publishing" &&
++    summary.publication_status !== "published";
+ 
+   return (
+     <Container maxWidth="lg" sx={{ pb: 4 }}>
+@@ -51,6 +59,10 @@ export function BatchProgressPanel(props: {
+             <Chip label={`Pendentes: ${summary.pending_documents}`} variant="outlined" />
+             <Chip label={`Falhas: ${summary.failed_documents}`} variant="outlined" />
+             <Chip label={`Ambiguidades: ${summary.ambiguous_documents}`} variant="outlined" />
++            <Chip
++              label={`Publicacao: ${summary.publication_status === "published" ? "publicado" : summary.publication_status === "publishing" ? "publicando" : summary.publication_status === "failed" ? "falha" : "pendente"}`}
++              variant="outlined"
++            />
+           </Stack>
+ 
+           <LinearProgress
+@@ -90,6 +102,18 @@ export function BatchProgressPanel(props: {
+             </Alert>
+           ) : null}
+ 
++          {summary.publication_status === "published" ? (
++            <Alert severity="success" role="status">
++              Lote publicado com sucesso. Os documentos ficam disponiveis no portal na proxima leitura.
++            </Alert>
++          ) : null}
++
++          {summary.publication_status === "failed" ? (
++            <Alert severity="error" role="alert">
++              {summary.last_publication_error ?? "A publicacao do lote nao foi concluida."}
++            </Alert>
++          ) : null}
++
+           <Button
+             type="button"
+             variant="outlined"
+@@ -102,13 +126,23 @@ export function BatchProgressPanel(props: {
+ 
+           <Button
+             type="button"
+-            variant="contained"
++            variant="outlined"
+             onClick={props.onReprocess}
+             disabled={!canStartReprocess || props.isReprocessing}
+             sx={{ alignSelf: "flex-start" }}
+           >
+             {props.isReprocessing ? "Reprocessando itens elegiveis..." : "Reprocessar itens elegiveis"}
+           </Button>
++
++          <Button
++            type="button"
++            variant="contained"
++            onClick={props.onPublish}
++            disabled={!canStartPublish || props.isPublishing}
++            sx={{ alignSelf: "flex-start" }}
++          >
++            {props.isPublishing ? "Publicando lote..." : "Publicar lote"}
++          </Button>
+         </Stack>
+       </Paper>
+     </Container>
+diff --git a/src/app/(rh)/lotes/page.tsx b/src/app/(rh)/lotes/page.tsx
+index ffa046f..3f91cc1 100644
+--- a/src/app/(rh)/lotes/page.tsx
++++ b/src/app/(rh)/lotes/page.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { type ChangeEvent, type FormEvent, useState } from "react";
++import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
+ import {
+   Alert,
+   Box,
+@@ -146,6 +146,18 @@ export default function RhBatchImportPage() {
+   const [routingNotice, setRoutingNotice] = useState<RoutingNotice>(null);
+   const [routingInProgress, setRoutingInProgress] = useState(false);
+   const [reprocessInProgress, setReprocessInProgress] = useState(false);
++  const [publishingInProgress, setPublishingInProgress] = useState(false);
++  const publishIdempotencyKeyRef = useRef<string | null>(null);
++  const publishBatchIdRef = useRef<string | null>(null);
++
++  useEffect(() => {
++    const currentBatchId = routingProgress?.batch_id ?? null;
++
++    if (publishBatchIdRef.current !== currentBatchId) {
++      publishBatchIdRef.current = currentBatchId;
++      publishIdempotencyKeyRef.current = null;
++    }
++  }, [routingProgress?.batch_id]);
+ 
+   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+     event.preventDefault();
+@@ -303,6 +315,64 @@ export default function RhBatchImportPage() {
+     setReprocessInProgress(false);
+   }
+ 
++  async function handlePublishBatch() {
++    if (!routingProgress?.batch_id || publishingInProgress) {
++      return;
++    }
++
++    const idempotencyKey = publishIdempotencyKeyRef.current ?? crypto.randomUUID();
++    publishIdempotencyKeyRef.current = idempotencyKey;
++    setPublishingInProgress(true);
++    setRoutingNotice({
++      tone: "info",
++      message: "Publicacao em andamento. O sistema esta liberando o lote validado no portal.",
++    });
++
++    try {
++      const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/publish`, {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({
++          idempotency_key: idempotencyKey,
++        }),
++      });
++
++      const payload = (await response.json()) as {
++        data: (BatchRoutingProgress & {
++          total_requested: number;
++          total_published: number;
++          total_skipped: number;
++          total_failed: number;
++        }) | null;
++        error: { message: string } | null;
++      };
++
++      if (!response.ok || !payload.data) {
++        setRoutingNotice({
++          tone: "error",
++          message: payload.error?.message ?? "Nao foi possivel publicar o lote.",
++        });
++        return;
++      }
++
++      setRoutingProgress(payload.data);
++      setRoutingNotice({
++        tone: "success",
++        message:
++          payload.data.total_published > 0
++            ? `Lote publicado com ${payload.data.total_published} documento(s).`
++            : "Lote publicado com sucesso.",
++      });
++    } catch {
++      setRoutingNotice({
++        tone: "error",
++        message: "Falha de comunicacao ao publicar o lote. Tente novamente.",
++      });
++    } finally {
++      setPublishingInProgress(false);
++    }
++  }
++
+   return (
+     <Stack spacing={3}>
+       <BatchImportPageView
+@@ -317,10 +387,12 @@ export default function RhBatchImportPage() {
+         summary={routingProgress}
+         isProcessing={routingInProgress}
+         isReprocessing={reprocessInProgress}
++        isPublishing={publishingInProgress}
+         statusTone={routingNotice?.tone ?? undefined}
+         statusMessage={routingNotice?.message ?? undefined}
+         onProcess={handleProcessRouting}
+         onReprocess={handleReprocessEligible}
++        onPublish={handlePublishBatch}
+       />
+     </Stack>
+   );
+diff --git a/src/app/api/v1/rh/batches/[batchId]/process/route.ts b/src/app/api/v1/rh/batches/[batchId]/process/route.ts
+index 278a676..d1f323f 100644
+--- a/src/app/api/v1/rh/batches/[batchId]/process/route.ts
++++ b/src/app/api/v1/rh/batches/[batchId]/process/route.ts
+@@ -65,6 +65,13 @@ async function loadBatch(batchId: string) {
+       routingAmbiguousCount: batches.routingAmbiguousCount,
+       routingBlockedReason: batches.routingBlockedReason,
+       routingProcessedAt: batches.routingProcessedAt,
++      publicationStatus: batches.publicationStatus,
++      publicationAttempts: batches.publicationAttempts,
++      publishedAt: batches.publishedAt,
++      publishedBy: batches.publishedBy,
++      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
++      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
++      lastPublicationError: batches.lastPublicationError,
+     })
+     .from(batches)
+     .where(eq(batches.id, batchId))
+diff --git a/src/app/api/v1/rh/batches/[batchId]/reprocess/route.ts b/src/app/api/v1/rh/batches/[batchId]/reprocess/route.ts
+index b13005e..e80d6f9 100644
+--- a/src/app/api/v1/rh/batches/[batchId]/reprocess/route.ts
++++ b/src/app/api/v1/rh/batches/[batchId]/reprocess/route.ts
+@@ -30,6 +30,14 @@ const payloadSchema = z
+     idempotency_key: z.string().trim().min(8).max(128),
+   })
+   .superRefine((value, ctx) => {
++    if (value.reprocess_all_eligible && value.exception_ids && value.exception_ids.length > 0) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        path: ["exception_ids"],
++        message: "Nao combine exception_ids com reprocess_all_eligible=true.",
++      });
++    }
++
+     if (!value.reprocess_all_eligible && (!value.exception_ids || value.exception_ids.length === 0)) {
+       ctx.addIssue({
+         code: z.ZodIssueCode.custom,
+diff --git a/src/app/api/v1/rh/batches/[batchId]/route.ts b/src/app/api/v1/rh/batches/[batchId]/route.ts
+index 0c811a0..005c5f1 100644
+--- a/src/app/api/v1/rh/batches/[batchId]/route.ts
++++ b/src/app/api/v1/rh/batches/[batchId]/route.ts
+@@ -121,6 +121,7 @@ export async function GET(
+     .select({
+       id: batches.id,
+       tenantId: batches.tenantId,
++      validationStatus: batches.validationStatus,
+       routingStatus: batches.routingStatus,
+       routingTotalCount: batches.routingTotalCount,
+       routingMatchedCount: batches.routingMatchedCount,
+@@ -129,6 +130,13 @@ export async function GET(
+       routingAmbiguousCount: batches.routingAmbiguousCount,
+       routingBlockedReason: batches.routingBlockedReason,
+       routingProcessedAt: batches.routingProcessedAt,
++      publicationStatus: batches.publicationStatus,
++      publicationAttempts: batches.publicationAttempts,
++      publishedAt: batches.publishedAt,
++      publishedBy: batches.publishedBy,
++      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
++      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
++      lastPublicationError: batches.lastPublicationError,
+     })
+     .from(batches)
+     .where(eq(batches.id, paramsParsed.data.batchId))
+diff --git a/src/lib/compliance/minimization.ts b/src/lib/compliance/minimization.ts
+index d9daed0..e8e3606 100644
+--- a/src/lib/compliance/minimization.ts
++++ b/src/lib/compliance/minimization.ts
+@@ -42,26 +42,15 @@ function maskEmail(value: string): string {
+   return `${firstChar}***@${domainPart}`;
+ }
+ 
+-const ROLE_BASED_ADDITIONAL_BLOCKS: Record<RbacRole, Set<string>> = {
+-  admin_plataforma: new Set([]), // admins see everything (except always-blocked)
+-  rh_gestor: new Set([]), // no additional restrictions
+-  rh_operator: new Set([]), // no additional restrictions
+-  colaborador: new Set([]), // role documented but no additional blocking for now
+-  suporte: new Set([]), // role documented but no additional blocking for now
+-};
+-
+ function minimizeObject(
+   payload: Record<string, unknown>,
+   minimizationProfile: MinimizationProfile,
+-  role?: RbacRole,
+ ): Record<string, unknown> {
+   if (!payload || typeof payload !== "object") {
+     return {};
+   }
+ 
+   const next: Record<string, unknown> = {};
+-  // NOTE: Role parameter is accepted for future AC2 compliance audit logging.
+-  // Role-based field filtering not yet implemented; all roles share minimizationProfile rules.
+ 
+   for (const [key, rawValue] of Object.entries(payload)) {
+     const normalizedKey = key.toLowerCase();
+@@ -96,5 +85,5 @@ export function minimizeDataForRole<T extends Record<string, unknown>>(
+     role: RbacRole;
+   },
+ ): Partial<T> {
+-  return minimizeObject(payload, params.minimizationProfile, params.role) as Partial<T>;
++  return minimizeObject(payload, params.minimizationProfile) as Partial<T>;
+ }
+diff --git a/src/lib/db/schema/batches.ts b/src/lib/db/schema/batches.ts
+index d8e6c3f..015bedd 100644
+--- a/src/lib/db/schema/batches.ts
++++ b/src/lib/db/schema/batches.ts
+@@ -27,6 +27,13 @@ export const batchRoutingStatusEnum = pgEnum("batch_routing_status", [
+   "failed",
+ ]);
+ 
++export const batchPublicationStatusEnum = pgEnum("batch_publication_status", [
++  "pending",
++  "publishing",
++  "published",
++  "failed",
++]);
++
+ export const batches = pgTable("batches", {
+   id: uuid("id").defaultRandom().primaryKey(),
+   tenantId: uuid("tenant_id")
+@@ -53,6 +60,13 @@ export const batches = pgTable("batches", {
+   routingAmbiguousCount: integer("routing_ambiguous_count").notNull().default(0),
+   routingBlockedReason: text("routing_blocked_reason"),
+   routingProcessedAt: timestamp("routing_processed_at", { withTimezone: true }),
++  publicationStatus: batchPublicationStatusEnum("publication_status").notNull().default("pending"),
++  publicationAttempts: integer("publication_attempts").notNull().default(0),
++  publishedAt: timestamp("published_at", { withTimezone: true }),
++  publishedBy: uuid("published_by").references(() => users.id, { onDelete: "set null" }),
++  lastPublicationCorrelationId: uuid("last_publication_correlation_id"),
++  lastPublicationIdempotencyKey: text("last_publication_idempotency_key"),
++  lastPublicationError: text("last_publication_error"),
+   correlationId: uuid("correlation_id").notNull(),
+   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+diff --git a/src/lib/db/schema/index.ts b/src/lib/db/schema/index.ts
+index d2e8d03..8ea91d7 100644
+--- a/src/lib/db/schema/index.ts
++++ b/src/lib/db/schema/index.ts
+@@ -9,4 +9,6 @@ export * from "./employee-documents";
+ export * from "./document-contestations";
+ export * from "./employee-notifications";
+ export * from "./batches";
++export * from "./exceptions";
++export * from "./exception-actions";
+ 
+diff --git a/src/lib/rh/batches/batch-progress.ts b/src/lib/rh/batches/batch-progress.ts
+index e46b066..b979709 100644
+--- a/src/lib/rh/batches/batch-progress.ts
++++ b/src/lib/rh/batches/batch-progress.ts
+@@ -8,7 +8,15 @@ export const BATCH_ROUTING_STATUSES = [
+   "failed",
+ ] as const;
+ 
++export const BATCH_PUBLICATION_STATUSES = [
++  "pending",
++  "publishing",
++  "published",
++  "failed",
++] as const;
++
+ export type BatchRoutingStatus = (typeof BATCH_ROUTING_STATUSES)[number];
++export type BatchPublicationStatus = (typeof BATCH_PUBLICATION_STATUSES)[number];
+ 
+ export const batchRoutingProgressSchema = z.object({
+   batch_id: z.string().trim().min(1),
+@@ -22,6 +30,13 @@ export const batchRoutingProgressSchema = z.object({
+   blocked_documents: z.number().int().nonnegative(),
+   processed_at: z.string().datetime().nullable(),
+   blocked_reason: z.string().trim().nullable(),
++  publication_status: z.enum(BATCH_PUBLICATION_STATUSES).nullable().optional(),
++  publication_attempts: z.number().int().nonnegative().optional(),
++  published_at: z.string().datetime().nullable().optional(),
++  published_by: z.string().trim().nullable().optional(),
++  last_publication_correlation_id: z.string().trim().nullable().optional(),
++  last_publication_idempotency_key: z.string().trim().nullable().optional(),
++  last_publication_error: z.string().trim().nullable().optional(),
+ });
+ 
+ export type BatchRoutingProgress = z.infer<typeof batchRoutingProgressSchema>;
+@@ -39,6 +54,13 @@ export function buildEmptyBatchRoutingProgress(): BatchRoutingProgress {
+     blocked_documents: 0,
+     processed_at: null,
+     blocked_reason: null,
++    publication_status: "pending",
++    publication_attempts: 0,
++    published_at: null,
++    published_by: null,
++    last_publication_correlation_id: null,
++    last_publication_idempotency_key: null,
++    last_publication_error: null,
+   };
+ }
+ 
+@@ -59,6 +81,13 @@ export function buildPendingBatchRoutingProgress(params: {
+     blocked_documents: 0,
+     processed_at: null,
+     blocked_reason: null,
++    publication_status: "pending",
++    publication_attempts: 0,
++    published_at: null,
++    published_by: null,
++    last_publication_correlation_id: null,
++    last_publication_idempotency_key: null,
++    last_publication_error: null,
+   };
+ }
+ 
+@@ -73,6 +102,13 @@ export function buildBatchRoutingProgressFromRecord(record: {
+   routingAmbiguousCount: number;
+   routingBlockedReason: string | null;
+   routingProcessedAt: Date | string | null;
++  publicationStatus?: BatchPublicationStatus | null;
++  publicationAttempts?: number | null;
++  publishedAt?: Date | string | null;
++  publishedBy?: string | null;
++  lastPublicationCorrelationId?: string | null;
++  lastPublicationIdempotencyKey?: string | null;
++  lastPublicationError?: string | null;
+ }): BatchRoutingProgress {
+   return {
+     batch_id: record.id,
+@@ -91,5 +127,17 @@ export function buildBatchRoutingProgressFromRecord(record: {
+           ? record.routingProcessedAt
+           : null,
+     blocked_reason: record.routingBlockedReason,
++    publication_status: record.publicationStatus ?? "pending",
++    publication_attempts: record.publicationAttempts ?? 0,
++    published_at:
++      record.publishedAt instanceof Date
++        ? record.publishedAt.toISOString()
++        : typeof record.publishedAt === "string"
++          ? record.publishedAt
++          : null,
++    published_by: record.publishedBy ?? null,
++    last_publication_correlation_id: record.lastPublicationCorrelationId ?? null,
++    last_publication_idempotency_key: record.lastPublicationIdempotencyKey ?? null,
++    last_publication_error: record.lastPublicationError ?? null,
+   };
+ }
+\ No newline at end of file
+diff --git a/src/modules/exceptions/infrastructure/exception-repository.ts b/src/modules/exceptions/infrastructure/exception-repository.ts
+index 2858706..11ade2e 100644
+--- a/src/modules/exceptions/infrastructure/exception-repository.ts
++++ b/src/modules/exceptions/infrastructure/exception-repository.ts
+@@ -394,13 +394,17 @@ export async function reprocessBatchExceptions(input: {
+     .where(and(eq(exceptions.batchId, input.batchId), eq(exceptions.tenantId, input.tenantId)));
+ 
+   const rowsMap = new Map(rows.map((row) => [row.id, row]));
+-  const selectedRows = input.exceptionIds?.length
+-    ? input.exceptionIds
++  const uniqueExceptionIds = input.exceptionIds?.length
++    ? Array.from(new Set(input.exceptionIds))
++    : undefined;
++
++  const selectedRows = uniqueExceptionIds?.length
++    ? uniqueExceptionIds
+         .map((exceptionId) => rowsMap.get(exceptionId))
+         .filter((row): row is (typeof rows)[number] => Boolean(row))
+     : rows;
+ 
+-  if (input.exceptionIds?.length && selectedRows.length !== input.exceptionIds.length) {
++  if (uniqueExceptionIds?.length && selectedRows.length !== uniqueExceptionIds.length) {
+     throw new ExceptionWorkflowError(
+       "EXCEPTION_NOT_FOUND",
+       "Uma ou mais excecoes nao pertencem ao lote informado.",
+@@ -414,65 +418,70 @@ export async function reprocessBatchExceptions(input: {
+   let totalResolved = 0;
+   let totalFailed = 0;
+ 
+-  for (const row of selectedRows) {
+-    const previousState = row.currentState as ExceptionState;
+-    const correctionResult = row.correctionResult as ExceptionCorrectionResult | null;
++  await db.transaction(async (tx) => {
++    for (const row of selectedRows) {
++      const previousState = row.currentState as ExceptionState;
++      const correctionResult = row.correctionResult as ExceptionCorrectionResult | null;
++
++      if (!isExceptionEligibleForReprocess({ current_state: previousState, correction_result: correctionResult })) {
++        itemResults.push({
++          exception_id: row.id,
++          previous_state: previousState,
++          current_state: previousState,
++          status: "skipped",
++          reason: "Item nao elegivel para reprocessamento.",
++        });
++        if (previousState !== "resolved") {
++          totalFailed += 1;
++        } else {
++          totalResolved += 1;
++        }
++        continue;
++      }
+ 
+-    if (!isExceptionEligibleForReprocess({ current_state: previousState, correction_result: correctionResult })) {
+-      itemResults.push({
+-        exception_id: row.id,
+-        previous_state: previousState,
+-        current_state: previousState,
+-        status: "skipped",
+-        reason: "Item nao elegivel para reprocessamento.",
+-      });
+-      if (previousState !== "resolved") {
+-        totalFailed += 1;
+-      } else {
+-        totalResolved += 1;
++      if (hasIdempotencyHit(row.lastReprocessIdempotencyKey, input.idempotencyKey)) {
++        itemResults.push({
++          exception_id: row.id,
++          previous_state: previousState,
++          current_state: previousState,
++          status: "idempotent",
++          reason: "Requisicao idempotente reaproveitada.",
++        });
++        if (previousState === "resolved") {
++          totalResolved += 1;
++        }
++        continue;
+       }
+-      continue;
+-    }
+ 
+-    if (hasIdempotencyHit(row.lastReprocessIdempotencyKey, input.idempotencyKey)) {
++      const now = new Date();
++      await tx
++        .update(exceptions)
++        .set({
++          currentState: "resolved",
++          resolvedBy: input.actorId,
++          resolvedAt: now,
++          updatedAt: now,
++          reprocessAttempts: (row.reprocessAttempts ?? 0) + 1,
++          lastReprocessAt: now,
++          lastReprocessCorrelationId: input.correlationId,
++          lastReprocessIdempotencyKey: input.idempotencyKey,
++        })
++        .where(and(eq(exceptions.id, row.id), eq(exceptions.tenantId, input.tenantId)));
++
++      totalReprocessed += 1;
++      totalResolved += 1;
+       itemResults.push({
+         exception_id: row.id,
+         previous_state: previousState,
+         current_state: "resolved",
+-        status: "idempotent",
+-        reason: "Requisicao idempotente reaproveitada.",
++        status: "reprocessed",
++        reason: null,
+       });
+-      totalResolved += 1;
+-      continue;
+     }
+-
+-    const now = new Date();
+-    await db
+-      .update(exceptions)
+-      .set({
+-        currentState: "resolved",
+-        resolvedBy: input.actorId,
+-        resolvedAt: now,
+-        updatedAt: now,
+-        reprocessAttempts: (row.reprocessAttempts ?? 0) + 1,
+-        lastReprocessAt: now,
+-        lastReprocessCorrelationId: input.correlationId,
+-        lastReprocessIdempotencyKey: input.idempotencyKey,
+-      })
+-      .where(and(eq(exceptions.id, row.id), eq(exceptions.tenantId, input.tenantId)));
+-
+-    totalReprocessed += 1;
+-    totalResolved += 1;
+-    itemResults.push({
+-      exception_id: row.id,
+-      previous_state: previousState,
+-      current_state: "resolved",
+-      status: "reprocessed",
+-      reason: null,
+-    });
+-  }
++  });
+ 
+   const totalRequested = selectedRows.length;
++  let totalRemaining = 0;
+   const totalEligible = selectedRows.filter((row) =>
+     isExceptionEligibleForReprocess({
+       current_state: row.currentState as ExceptionState,
+@@ -480,6 +489,8 @@ export async function reprocessBatchExceptions(input: {
+     }),
+   ).length;
+ 
++  totalRemaining = Math.max(0, totalRequested - totalResolved);
++
+   return {
+     batch_id: input.batchId,
+     idempotency_key: input.idempotencyKey,
+@@ -487,7 +498,7 @@ export async function reprocessBatchExceptions(input: {
+     total_eligible: totalEligible,
+     total_reprocessed: totalReprocessed,
+     total_resolved: totalResolved,
+-    total_remaining: Math.max(0, totalRequested - totalResolved),
++    total_remaining: totalRemaining,
+     total_failed: totalFailed,
+     items: itemResults,
+     processed_at: processedAt,
+
+
+diff --git a/__tests__/api/exceptions.test.ts b/__tests__/api/exceptions.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/api/exceptions.test.ts
+
++++ b/__tests__/api/exceptions.test.ts
+@@ -0,0 +1,317 @@
++import { NextRequest } from "next/server";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
++const OTHER_TENANT_ID = "22222222-2222-4222-8222-222222222222";
++
++const {
++  validateSessionMock,
++  dbSelectMock,
++  dbFromMock,
++  dbWhereMock,
++  dbLimitMock,
++  listBatchExceptionsMock,
++  getExceptionDetailMock,
++  updateExceptionStateMock,
++  recordCorrectiveExceptionActionMock,
++} = vi.hoisted(() => ({
++  validateSessionMock: vi.fn(),
++  dbSelectMock: vi.fn(),
++  dbFromMock: vi.fn(),
++  dbWhereMock: vi.fn(),
++  dbLimitMock: vi.fn(),
++  listBatchExceptionsMock: vi.fn(),
++  getExceptionDetailMock: vi.fn(),
++  updateExceptionStateMock: vi.fn(),
++  recordCorrectiveExceptionActionMock: vi.fn(),
++}));
++
++vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
++
++vi.mock("@/lib/db/client", () => ({
++  db: {
++    select: dbSelectMock.mockReturnValue({
++      from: dbFromMock.mockReturnValue({
++        where: dbWhereMock.mockReturnValue({
++          limit: dbLimitMock,
++        }),
++      }),
++    }),
++  },
++}));
++
++vi.mock("@/modules/exceptions/application/list-exceptions", () => ({
++  listBatchExceptions: listBatchExceptionsMock,
++}));
++
++vi.mock("@/modules/exceptions/infrastructure/exception-repository", () => ({
++  getExceptionDetail: getExceptionDetailMock,
++  updateExceptionState: updateExceptionStateMock,
++}));
++
++vi.mock("@/modules/exceptions/application/record-exception-action", () => ({
++  recordCorrectiveExceptionAction: recordCorrectiveExceptionActionMock,
++}));
++
++import { GET as GET_BATCH_EXCEPTIONS } from "@/app/api/v1/batches/[batch-id]/exceptions/route";
++import { GET as GET_EXCEPTION, PATCH as PATCH_EXCEPTION } from "@/app/api/v1/exceptions/[exception-id]/route";
++import { POST as POST_EXCEPTION_ACTION } from "@/app/api/v1/exceptions/[exception-id]/actions/route";
++
++describe("exception api", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    validateSessionMock.mockResolvedValue({
++      userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      tenantId: SESSION_TENANT_ID,
++    });
++
++    dbLimitMock.mockResolvedValue([{ role: "rh_operator" }]);
++
++    listBatchExceptionsMock.mockResolvedValue({
++      exceptions: [
++        {
++          id: "exc-1",
++          batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          batch_name: "Lote RH",
++          document_external_id: "DOC-001",
++          document_filename: "lote-rh.csv",
++          associated_employee_id: "emp-1",
++          assoc_employee_external_id: "EMP-1",
++          associated_employee_name: "Maria",
++          associated_employee_email: "maria@empresa.com",
++          error_category: "ambiguous-routing",
++          priority: "high",
++          current_state: "pending",
++          recommended_action: "Revisar mapeamento.",
++          created_at: "2026-04-09T12:00:00.000Z",
++        },
++      ],
++      metadata: {
++        total_count: 1,
++        pending_count: 1,
++        in_treatment_count: 0,
++        resolved_count: 0,
++        blocked_count: 0,
++      },
++    });
++
++    getExceptionDetailMock.mockResolvedValue({
++      id: "exc-1",
++      batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      batch_name: "Lote RH",
++      document_external_id: "DOC-001",
++      document_filename: "lote-rh.csv",
++      associated_employee_id: "emp-1",
++      assoc_employee_external_id: "EMP-1",
++      associated_employee_name: "Maria",
++      associated_employee_email: "maria@empresa.com",
++      error_category: "ambiguous-routing",
++      priority: "high",
++      current_state: "pending",
++      recommended_action: "Revisar mapeamento.",
++      error_details: { matching_employees: [] },
++      correction_applied: null,
++      correction_result: null,
++      resolved_by: null,
++      resolved_by_name: null,
++      resolved_at: null,
++      updated_at: "2026-04-09T12:05:00.000Z",
++      created_at: "2026-04-09T12:00:00.000Z",
++      actions_history: [],
++    });
++
++    updateExceptionStateMock.mockResolvedValue({
++      exception_id: "exc-1",
++      previous_state: "pending",
++      new_state: "in-treatment",
++      updated_at: "2026-04-09T12:10:00.000Z",
++    });
++
++    recordCorrectiveExceptionActionMock.mockResolvedValue({
++      action_id: "act-1",
++      exception_id: "exc-1",
++      performed_at: "2026-04-09T12:12:00.000Z",
++      actor_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      message: "Acao registrada. Excecao marcada em tratamento.",
++    });
++  });
++
++  it("returns a filtered exception list with metadata", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/exceptions?priority=high&state=pending&skip=0&take=20",
++      {
++        headers: {
++          cookie: "session_id=token",
++          "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        },
++      },
++    );
++
++    const response = await GET_BATCH_EXCEPTIONS(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
++    expect(body.data.exceptions).toHaveLength(1);
++    expect(body.data.metadata.total_count).toBe(1);
++    expect(listBatchExceptionsMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        priority: "high",
++        state: "pending",
++        skip: 0,
++        take: 20,
++      }),
++    );
++  });
++
++  it("rejects invalid filters before hitting the database", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/exceptions?priority=urgent",
++      {
++        headers: { cookie: "session_id=token" },
++      },
++    );
++
++    const response = await GET_BATCH_EXCEPTIONS(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(body.error.code).toBe("VALIDATION_ERROR");
++  });
++
++  it("rejects unauthenticated exception list access", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/exceptions",
++    );
++
++    const response = await GET_BATCH_EXCEPTIONS(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++
++    expect(response.status).toBe(401);
++  });
++
++  it("returns detail with action history and tenant context", async () => {
++    dbLimitMock
++      .mockResolvedValueOnce([{ role: "rh_operator" }])
++      .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
++
++    const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await GET_EXCEPTION(request, {
++      params: Promise.resolve({ exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(body.data.exception.id).toBe("exc-1");
++    expect(getExceptionDetailMock).toHaveBeenCalledWith(
++      expect.objectContaining({ tenantId: SESSION_TENANT_ID, exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    );
++  });
++
++  it("blocks access to exceptions from another tenant", async () => {
++    dbLimitMock
++      .mockResolvedValueOnce([{ role: "rh_operator" }])
++      .mockResolvedValueOnce([{ tenantId: OTHER_TENANT_ID }]);
++
++    const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await GET_EXCEPTION(request, {
++      params: Promise.resolve({ exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    });
++
++    expect(response.status).toBe(403);
++  });
++
++  it("updates exception state and returns transition metadata", async () => {
++    dbLimitMock
++      .mockResolvedValueOnce([{ role: "rh_operator" }])
++      .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
++
++    const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
++      method: "PATCH",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({ new_state: "in-treatment", note: "Iniciando investigacao" }),
++    });
++
++    const response = await PATCH_EXCEPTION(request, {
++      params: Promise.resolve({ exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(body.data.new_state).toBe("in-treatment");
++    expect(updateExceptionStateMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        exceptionId: "11111111-1111-4111-8111-111111111111",
++        nextState: "in-treatment",
++      }),
++    );
++  });
++
++  it("records corrective actions with validation", async () => {
++    dbLimitMock
++      .mockResolvedValueOnce([{ role: "rh_operator" }])
++      .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
++
++    const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1/actions", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({
++        action_description: "Confirmado com o RH o mapeamento correto do colaborador.",
++        expected_result: "reprocessable",
++      }),
++    });
++
++    const response = await POST_EXCEPTION_ACTION(request, {
++      params: Promise.resolve({ exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(201);
++    expect(body.data.message).toContain("Acao registrada");
++    expect(recordCorrectiveExceptionActionMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        exceptionId: "11111111-1111-4111-8111-111111111111",
++        expectedResult: "reprocessable",
++      }),
++    );
++  });
++
++  it("rejects invalid corrective action payloads", async () => {
++    const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1/actions", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({ action_description: "curto", expected_result: "reject" }),
++    });
++
++    const response = await POST_EXCEPTION_ACTION(request, {
++      params: Promise.resolve({ exceptionId: "11111111-1111-4111-8111-111111111111" }),
++    });
++
++    expect(response.status).toBe(400);
++  });
++});
+\ No newline at end of file
+
+
+
+diff --git a/__tests__/audit-events-api.test.ts b/__tests__/audit-events-api.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/audit-events-api.test.ts
+
++++ b/__tests__/audit-events-api.test.ts
+@@ -0,0 +1,178 @@
++import { NextRequest } from "next/server";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
++
++const {
++  validateSessionMock,
++  dbSelectMock,
++  dbFromMock,
++  dbWhereMock,
++  dbLimitMock,
++  listAuditEventsMock,
++  AuditEventsError,
++} = vi.hoisted(() => ({
++  validateSessionMock: vi.fn(),
++  dbSelectMock: vi.fn(),
++  dbFromMock: vi.fn(),
++  dbWhereMock: vi.fn(),
++  dbLimitMock: vi.fn(),
++  listAuditEventsMock: vi.fn(),
++  AuditEventsError: class extends Error {
++    constructor(
++      public readonly code: string,
++      message: string,
++      public readonly statusCode: number,
++      public readonly details?: Record<string, unknown>,
++    ) {
++      super(message);
++      this.name = "AuditEventsError";
++    }
++  },
++}));
++
++vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
++
++vi.mock("@/lib/db/client", () => ({
++  db: {
++    select: dbSelectMock.mockReturnValue({
++      from: dbFromMock.mockReturnValue({
++        where: dbWhereMock.mockReturnValue({
++          limit: dbLimitMock,
++        }),
++      }),
++    }),
++  },
++}));
++
++vi.mock("@/modules/audit/application/list-audit-events", () => ({
++  listAuditEvents: listAuditEventsMock,
++  AuditEventsError,
++}));
++
++import { GET } from "@/app/api/v1/audit-events/route";
++
++describe("audit events api", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    validateSessionMock.mockResolvedValue({
++      userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      tenantId: SESSION_TENANT_ID,
++    });
++
++    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
++
++    listAuditEventsMock.mockResolvedValue({
++      events: [
++        {
++          id: "evt-1",
++          action: "rh.batch.import.validated.v1",
++          status: "success",
++          resource_type: "batch",
++          resource_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          actor_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++          correlation_id: "11111111-1111-4111-8111-111111111111",
++          created_at: "2026-04-13T12:00:00.000Z",
++          details: { total_rows: 10 },
++        },
++      ],
++      timeline: [
++        {
++          event_id: "evt-1",
++          action: "rh.batch.import.validated.v1",
++          status: "success",
++          occurred_at: "2026-04-13T12:00:00.000Z",
++        },
++      ],
++      pagination: {
++        page: 1,
++        page_size: 20,
++        total: 1,
++        total_pages: 1,
++      },
++    });
++  });
++
++  it("returns tenant-scoped events with correlation id", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/audit-events?from=2026-04-10T00:00:00.000Z&to=2026-04-13T23:59:59.999Z&batch_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb&page=1&page_size=20",
++      {
++        method: "GET",
++        headers: {
++          cookie: "session_id=token",
++          "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        },
++      },
++    );
++
++    const response = await GET(request);
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
++    expect(body.data.events).toHaveLength(1);
++    expect(listAuditEventsMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      }),
++    );
++  });
++
++  it("returns 400 when period is invalid", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/audit-events?from=2026-04-13T23:59:59.999Z&to=2026-04-10T00:00:00.000Z",
++      {
++        method: "GET",
++        headers: { cookie: "session_id=token" },
++      },
++    );
++
++    const response = await GET(request);
++
++    expect(response.status).toBe(400);
++    expect(listAuditEventsMock).not.toHaveBeenCalled();
++  });
++
++  it("returns 401 when session is absent", async () => {
++    const request = new NextRequest("http://localhost/api/v1/audit-events", {
++      method: "GET",
++    });
++
++    const response = await GET(request);
++
++    expect(response.status).toBe(401);
++  });
++
++  it("returns 403 when role is unauthorized", async () => {
++    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
++
++    const request = new NextRequest("http://localhost/api/v1/audit-events", {
++      method: "GET",
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await GET(request);
++
++    expect(response.status).toBe(403);
++    expect(listAuditEventsMock).not.toHaveBeenCalled();
++  });
++
++  it("surfaces domain errors with correct status", async () => {
++    listAuditEventsMock.mockRejectedValue(
++      new AuditEventsError("FORBIDDEN", "Acesso negado para trilha de outro tenant.", 403),
++    );
++
++    const request = new NextRequest("http://localhost/api/v1/audit-events", {
++      method: "GET",
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await GET(request);
++    const body = await response.json();
++
++    expect(response.status).toBe(403);
++    expect(body.error.code).toBe("FORBIDDEN");
++  });
++});
+
+
+
+diff --git a/__tests__/audit-events-domain.test.ts b/__tests__/audit-events-domain.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/audit-events-domain.test.ts
+
++++ b/__tests__/audit-events-domain.test.ts
+@@ -0,0 +1,50 @@
++import { describe, expect, it } from "vitest";
++import {
++  buildAuditTimeline,
++  normalizeAuditFilters,
++} from "@/modules/audit/domain/audit-event-filters";
++
++describe("audit event filters domain", () => {
++  it("normalizes filter payload and pagination", () => {
++    const normalized = normalizeAuditFilters({
++      from: "2026-04-10T00:00:00.000Z",
++      to: "2026-04-13T23:59:59.999Z",
++      batchId: " bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb ",
++      page: 0,
++      pageSize: 999,
++    });
++
++    expect(normalized.batchId).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
++    expect(normalized.page).toBe(1);
++    expect(normalized.pageSize).toBe(100);
++  });
++
++  it("throws for inverted period range", () => {
++    expect(() =>
++      normalizeAuditFilters({
++        from: "2026-04-13T23:59:59.999Z",
++        to: "2026-04-10T00:00:00.000Z",
++      }),
++    ).toThrow("Periodo invalido");
++  });
++
++  it("builds chronological timeline ascending by occurred_at", () => {
++    const timeline = buildAuditTimeline([
++      {
++        id: "evt-2",
++        action: "rh.batch.publication.finished.v1",
++        status: "success",
++        created_at: "2026-04-13T12:10:00.000Z",
++      },
++      {
++        id: "evt-1",
++        action: "rh.batch.import.validated.v1",
++        status: "success",
++        created_at: "2026-04-13T12:00:00.000Z",
++      },
++    ]);
++
++    expect(timeline[0].event_id).toBe("evt-1");
++    expect(timeline[1].event_id).toBe("evt-2");
++  });
++});
+
+
+
+diff --git a/__tests__/audit-ui.test.tsx b/__tests__/audit-ui.test.tsx
+new file mode 100644
+--- /dev/null
++++ b/__tests__/audit-ui.test.tsx
+
++++ b/__tests__/audit-ui.test.tsx
+@@ -0,0 +1,59 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vitest";
++import { StatusTimeline } from "@/components/audit/status-timeline";
++import { RhAuditPageView } from "@/app/(rh)/auditoria/page";
++
++describe("audit ui", () => {
++  it("renders timeline events in audit detail", () => {
++    const html = renderToStaticMarkup(
++      <StatusTimeline
++        items={[
++          {
++            event_id: "evt-1",
++            action: "rh.batch.import.validated.v1",
++            status: "success",
++            occurred_at: "2026-04-13T12:00:00.000Z",
++          },
++        ]}
++      />,
++    );
++
++    expect(html).toContain("Linha do tempo");
++    expect(html).toContain("rh.batch.import.validated.v1");
++  });
++
++  it("renders audit filters and events list", () => {
++    const html = renderToStaticMarkup(
++      <RhAuditPageView
++        filters={{
++          from: "2026-04-10T00:00:00.000Z",
++          to: "2026-04-13T23:59:59.999Z",
++          batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          document_id: "",
++          user_id: "",
++          page: 1,
++          page_size: 20,
++        }}
++        events={[
++          {
++            id: "evt-1",
++            action: "rh.batch.import.validated.v1",
++            status: "success",
++            resource_type: "batch",
++            resource_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++            actor_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++            correlation_id: "11111111-1111-4111-8111-111111111111",
++            created_at: "2026-04-13T12:00:00.000Z",
++            details: { total_rows: 10 },
++          },
++        ]}
++        timeline={[]}
++        pagination={{ page: 1, page_size: 20, total: 1, total_pages: 1 }}
++      />,
++    );
++
++    expect(html).toContain("Trilha de auditoria");
++    expect(html).toContain("Filtrar eventos");
++    expect(html).toContain("rh.batch.import.validated.v1");
++  });
++});
+
+
+
+diff --git a/__tests__/integration/exception-handling.test.ts b/__tests__/integration/exception-handling.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/integration/exception-handling.test.ts
+
++++ b/__tests__/integration/exception-handling.test.ts
+@@ -0,0 +1,102 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { buildExceptionQueueMetadata, isValidExceptionStateTransition } from "@/modules/exceptions/domain/exception";
++import { recordExceptionAction, updateExceptionState } from "@/modules/exceptions/infrastructure/exception-repository";
++
++const updateSetMock = vi.fn();
++const insertValuesMock = vi.fn();
++const insertReturningMock = vi.fn();
++
++const dbMock = vi.hoisted(() => ({
++  select: vi.fn(),
++  update: vi.fn(),
++  insert: vi.fn(),
++}));
++
++vi.mock("@/lib/db/client", () => ({
++  db: dbMock,
++}));
++
++vi.mock("@/lib/db/schema", async () => {
++  const actual = await vi.importActual<typeof import("@/lib/db/schema")>("@/lib/db/schema");
++  return actual;
++});
++
++describe("exception handling integration", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    dbMock.select.mockReturnValue({
++      from: vi.fn().mockReturnValue({
++        where: vi.fn().mockReturnValue({
++          limit: vi.fn().mockResolvedValue([{ id: "exc-1", currentState: "pending" }]),
++        }),
++      }),
++    });
++
++    dbMock.update.mockReturnValue({
++      set: updateSetMock.mockReturnValue({
++        where: vi.fn().mockResolvedValue(undefined),
++      }),
++    });
++
++    dbMock.insert.mockReturnValue({
++      values: insertValuesMock.mockReturnValue({
++        returning: insertReturningMock.mockResolvedValue([{ id: "act-1" }]),
++      }),
++    });
++  });
++
++  it("builds metadata counts deterministically", () => {
++    const metadata = buildExceptionQueueMetadata([
++      { current_state: "pending" },
++      { current_state: "in-treatment" },
++      { current_state: "resolved" },
++      { current_state: "blocked" },
++      { current_state: "pending" },
++    ]);
++
++    expect(metadata.total_count).toBe(5);
++    expect(metadata.pending_count).toBe(2);
++    expect(metadata.in_treatment_count).toBe(1);
++    expect(metadata.resolved_count).toBe(1);
++    expect(metadata.blocked_count).toBe(1);
++  });
++
++  it("validates the exception state machine", () => {
++    expect(isValidExceptionStateTransition("pending", "in-treatment")).toBe(true);
++    expect(isValidExceptionStateTransition("blocked", "resolved")).toBe(false);
++  });
++
++  it("records a corrective action and marks the exception in treatment", async () => {
++    const result = await recordExceptionAction({
++      tenantId: "11111111-1111-4111-8111-111111111111",
++      exceptionId: "exc-1",
++      actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      actionDescription: "Confirmado com RH o mapeamento correto.",
++      expectedResult: "reprocessable",
++    });
++
++    expect(result.action_id).toBe("act-1");
++    expect(dbMock.insert).toHaveBeenCalled();
++    expect(dbMock.update).toHaveBeenCalled();
++  });
++
++  it("rejects invalid state transitions at the repository boundary", async () => {
++    dbMock.select.mockReturnValue({
++      from: vi.fn().mockReturnValue({
++        where: vi.fn().mockReturnValue({
++          limit: vi.fn().mockResolvedValue([{ id: "exc-1", currentState: "resolved" }]),
++        }),
++      }),
++    });
++
++    await expect(
++      updateExceptionState({
++        tenantId: "11111111-1111-4111-8111-111111111111",
++        exceptionId: "exc-1",
++        nextState: "pending",
++        actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      }),
++    ).rejects.toMatchObject({ code: "INVALID_STATE_TRANSITION", statusCode: 409 });
++  });
++});
+\ No newline at end of file
+
+
+
+diff --git a/__tests__/rh-batches-publish-api.test.ts b/__tests__/rh-batches-publish-api.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/rh-batches-publish-api.test.ts
+
++++ b/__tests__/rh-batches-publish-api.test.ts
+@@ -0,0 +1,263 @@
++import { NextRequest } from "next/server";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
++const OTHER_TENANT_ID = "22222222-2222-4222-8222-222222222222";
++
++const {
++  BatchPublicationError,
++  validateSessionMock,
++  dbSelectMock,
++  dbFromMock,
++  dbWhereMock,
++  dbLimitMock,
++  publishBatchMock,
++} = vi.hoisted(() => ({
++  BatchPublicationError: class extends Error {
++    constructor(
++      public readonly code: string,
++      message: string,
++      public readonly statusCode: number,
++      public readonly details?: Record<string, unknown>,
++    ) {
++      super(message);
++      this.name = "BatchPublicationError";
++    }
++  },
++  validateSessionMock: vi.fn(),
++  dbSelectMock: vi.fn(),
++  dbFromMock: vi.fn(),
++  dbWhereMock: vi.fn(),
++  dbLimitMock: vi.fn(),
++  publishBatchMock: vi.fn(),
++}));
++
++vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
++
++vi.mock("@/lib/db/client", () => ({
++  db: {
++    select: dbSelectMock.mockReturnValue({
++      from: dbFromMock.mockReturnValue({
++        where: dbWhereMock.mockReturnValue({
++          limit: dbLimitMock,
++        }),
++      }),
++    }),
++  },
++}));
++
++vi.mock("@/modules/batches/application/publish-batch", () => ({
++  BatchPublicationError,
++  publishBatch: publishBatchMock,
++}));
++
++import { POST } from "@/app/api/v1/rh/batches/[batchId]/publish/route";
++
++describe("rh batch publish api", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    validateSessionMock.mockResolvedValue({
++      userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      tenantId: SESSION_TENANT_ID,
++    });
++
++    dbLimitMock.mockResolvedValue([{ role: "rh_operator" }]);
++
++    publishBatchMock.mockResolvedValue({
++      batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      tenant_id: SESSION_TENANT_ID,
++      routing_status: "completed",
++      total_documents: 2,
++      matched_documents: 2,
++      pending_documents: 0,
++      failed_documents: 0,
++      ambiguous_documents: 0,
++      blocked_documents: 0,
++      processed_at: "2026-04-13T12:00:00.000Z",
++      blocked_reason: null,
++      publication_status: "published",
++      publication_attempts: 1,
++      published_at: "2026-04-13T12:05:00.000Z",
++      published_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      last_publication_correlation_id: "11111111-1111-4111-8111-111111111111",
++      last_publication_idempotency_key: "idem-123456",
++      last_publication_error: null,
++      total_requested: 2,
++      total_published: 2,
++      total_skipped: 0,
++      total_failed: 0,
++    });
++  });
++
++  it("publishes a ready batch with tenant scoped success", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++          "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
++    expect(body.data.publication_status).toBe("published");
++    expect(body.data.total_published).toBe(2);
++    expect(publishBatchMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        idempotencyKey: "idem-123456",
++      }),
++    );
++  });
++
++  it("rejects requests without session", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++
++    expect(response.status).toBe(401);
++  });
++
++  it("rejects invalid payloads before publish service is called", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({ idempotency_key: "short" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++
++    expect(response.status).toBe(400);
++    expect(publishBatchMock).not.toHaveBeenCalled();
++  });
++
++  it("rejects non-rh operator role", async () => {
++    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
++
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(403);
++    expect(body.error.code).toBe("FORBIDDEN");
++  });
++
++  it("surfaces batch state conflicts from the publish service", async () => {
++    publishBatchMock.mockRejectedValue(
++      new BatchPublicationError("INVALID_BATCH_STATE", "Lote nao esta pronto para publicacao.", 409, {
++        routing_status: "completed",
++        validation_status: "validated",
++      }),
++    );
++
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(409);
++    expect(body.error.code).toBe("INVALID_BATCH_STATE");
++  });
++
++  it("surfaces tenant mismatch as forbidden", async () => {
++    publishBatchMock.mockRejectedValue(
++      new BatchPublicationError("FORBIDDEN", "Acesso negado para lote de outro tenant.", 403),
++    );
++
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/cccccccc-cccc-4ccc-8ccc-cccccccccccc/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }),
++    });
++
++    expect(response.status).toBe(403);
++  });
++
++  it("surfaces missing batch as not found", async () => {
++    publishBatchMock.mockRejectedValue(
++      new BatchPublicationError("NOT_FOUND", "Lote nao encontrado.", 404),
++    );
++
++    const request = new NextRequest(
++      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
++      {
++        method: "POST",
++        headers: {
++          cookie: "session_id=token",
++          "content-type": "application/json",
++        },
++        body: JSON.stringify({ idempotency_key: "idem-123456" }),
++      },
++    );
++
++    const response = await POST(request, {
++      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
++    });
++
++    expect(response.status).toBe(404);
++  });
++});
+\ No newline at end of file
+
+
+
+diff --git a/__tests__/rh-batches-publish-domain.test.ts b/__tests__/rh-batches-publish-domain.test.ts
+new file mode 100644
+--- /dev/null
++++ b/__tests__/rh-batches-publish-domain.test.ts
+
++++ b/__tests__/rh-batches-publish-domain.test.ts
+@@ -0,0 +1,241 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { publishBatch, BatchPublicationError } from "@/modules/batches/application/publish-batch";
++
++const {
++  loadBatchPublicationSnapshotMock,
++  loadBatchPublicationExceptionsMock,
++  markBatchPublicationStartingMock,
++  markBatchPublicationSucceededMock,
++  markBatchPublicationFailedMock,
++  writeBatchPublicationAuditMock,
++  buildDomainEventMock,
++  publishDomainEventMock,
++} = vi.hoisted(() => ({
++  loadBatchPublicationSnapshotMock: vi.fn(),
++  loadBatchPublicationExceptionsMock: vi.fn(),
++  markBatchPublicationStartingMock: vi.fn(),
++  markBatchPublicationSucceededMock: vi.fn(),
++  markBatchPublicationFailedMock: vi.fn(),
++  writeBatchPublicationAuditMock: vi.fn(),
++  buildDomainEventMock: vi.fn((event) => event),
++  publishDomainEventMock: vi.fn(async (event) => event),
++}));
++
++vi.mock("@/modules/batches/infrastructure/batch-repository", () => ({
++  loadBatchPublicationSnapshot: loadBatchPublicationSnapshotMock,
++  loadBatchPublicationExceptions: loadBatchPublicationExceptionsMock,
++  markBatchPublicationStarting: markBatchPublicationStartingMock,
++  markBatchPublicationSucceeded: markBatchPublicationSucceededMock,
++  markBatchPublicationFailed: markBatchPublicationFailedMock,
++}));
++
++vi.mock("@/lib/rh/batches/publish-audit", () => ({
++  writeBatchPublicationAudit: writeBatchPublicationAuditMock,
++}));
++
++vi.mock("@/lib/events/publisher", () => ({
++  buildDomainEvent: buildDomainEventMock,
++  publishDomainEvent: publishDomainEventMock,
++}));
++
++describe("publish batch domain", () => {
++  const transactionClient = {};
++  const dbClient = {
++    transaction: vi.fn(async (callback: (transaction: typeof transactionClient) => Promise<void>) => {
++      return callback(transactionClient);
++    }),
++  };
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    loadBatchPublicationSnapshotMock
++      .mockResolvedValueOnce({
++        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        tenantId: "11111111-1111-4111-8111-111111111111",
++        validationStatus: "validated",
++        routingStatus: "completed",
++        routingTotalCount: 2,
++        routingMatchedCount: 2,
++        routingPendingCount: 0,
++        routingFailedCount: 0,
++        routingAmbiguousCount: 0,
++        routingBlockedReason: null,
++        routingProcessedAt: "2026-04-13T12:00:00.000Z",
++        publicationStatus: "pending",
++        publicationAttempts: 0,
++        publishedAt: null,
++        publishedBy: null,
++        lastPublicationCorrelationId: null,
++        lastPublicationIdempotencyKey: null,
++        lastPublicationError: null,
++      })
++      .mockResolvedValueOnce({
++        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        tenantId: "11111111-1111-4111-8111-111111111111",
++        validationStatus: "validated",
++        routingStatus: "completed",
++        routingTotalCount: 2,
++        routingMatchedCount: 2,
++        routingPendingCount: 0,
++        routingFailedCount: 0,
++        routingAmbiguousCount: 0,
++        routingBlockedReason: null,
++        routingProcessedAt: "2026-04-13T12:00:00.000Z",
++        publicationStatus: "published",
++        publicationAttempts: 1,
++        publishedAt: "2026-04-13T12:05:00.000Z",
++        publishedBy: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++        lastPublicationCorrelationId: "11111111-1111-4111-8111-111111111111",
++        lastPublicationIdempotencyKey: "idem-123456",
++        lastPublicationError: null,
++      });
++
++    loadBatchPublicationExceptionsMock.mockResolvedValue([]);
++    writeBatchPublicationAuditMock.mockResolvedValue(undefined);
++    markBatchPublicationStartingMock.mockResolvedValue({
++      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      tenantId: "11111111-1111-4111-8111-111111111111",
++      validationStatus: "validated",
++      routingStatus: "completed",
++      routingTotalCount: 2,
++      routingMatchedCount: 2,
++      routingPendingCount: 0,
++      routingFailedCount: 0,
++      routingAmbiguousCount: 0,
++      routingBlockedReason: null,
++      routingProcessedAt: "2026-04-13T12:00:00.000Z",
++      publicationStatus: "publishing",
++      publicationAttempts: 1,
++      publishedAt: null,
++      publishedBy: null,
++      lastPublicationCorrelationId: "11111111-1111-4111-8111-111111111111",
++      lastPublicationIdempotencyKey: "idem-123456",
++      lastPublicationError: null,
++    });
++    markBatchPublicationSucceededMock.mockResolvedValue(undefined);
++    markBatchPublicationFailedMock.mockResolvedValue(undefined);
++  });
++
++  it("publishes a ready batch and records audit events", async () => {
++    const result = await publishBatch(
++      {
++        tenantId: "11111111-1111-4111-8111-111111111111",
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++        correlationId: "11111111-1111-4111-8111-111111111111",
++        idempotencyKey: "idem-123456",
++      },
++      dbClient as never,
++    );
++
++    expect(result.publication_status).toBe("published");
++    expect(result.total_published).toBe(2);
++    expect(dbClient.transaction).toHaveBeenCalledTimes(1);
++    expect(markBatchPublicationStartingMock).toHaveBeenCalledWith(
++      expect.objectContaining({ currentPublicationAttempts: 0 }),
++      transactionClient,
++    );
++    expect(markBatchPublicationSucceededMock).toHaveBeenCalledWith(
++      expect.objectContaining({ idempotencyKey: "idem-123456" }),
++      transactionClient,
++    );
++    expect(writeBatchPublicationAuditMock).toHaveBeenCalledWith(
++      expect.objectContaining({ stage: "started", status: "success" }),
++      dbClient,
++    );
++    expect(writeBatchPublicationAuditMock).toHaveBeenCalledWith(
++      expect.objectContaining({ stage: "finished", status: "success" }),
++      dbClient,
++    );
++    expect(publishDomainEventMock).toHaveBeenCalledWith(
++      expect.objectContaining({ event_name: "rh.batch.published.v1" }),
++    );
++  });
++
++  it("returns the same logical result on idempotent hits", async () => {
++    loadBatchPublicationSnapshotMock.mockReset();
++    loadBatchPublicationSnapshotMock.mockResolvedValueOnce({
++      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      tenantId: "11111111-1111-4111-8111-111111111111",
++      validationStatus: "validated",
++      routingStatus: "completed",
++      routingTotalCount: 2,
++      routingMatchedCount: 2,
++      routingPendingCount: 0,
++      routingFailedCount: 0,
++      routingAmbiguousCount: 0,
++      routingBlockedReason: null,
++      routingProcessedAt: "2026-04-13T12:00:00.000Z",
++      publicationStatus: "published",
++      publicationAttempts: 1,
++      publishedAt: "2026-04-13T12:05:00.000Z",
++      publishedBy: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      lastPublicationCorrelationId: "11111111-1111-4111-8111-111111111111",
++      lastPublicationIdempotencyKey: "idem-123456",
++      lastPublicationError: null,
++    });
++
++    const result = await publishBatch(
++      {
++        tenantId: "11111111-1111-4111-8111-111111111111",
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++        correlationId: "11111111-1111-4111-8111-111111111111",
++        idempotencyKey: "idem-123456",
++      },
++      dbClient as never,
++    );
++
++    expect(result.publication_status).toBe("published");
++    expect(dbClient.transaction).not.toHaveBeenCalled();
++    expect(markBatchPublicationStartingMock).not.toHaveBeenCalled();
++    expect(writeBatchPublicationAuditMock).not.toHaveBeenCalledWith(
++      expect.objectContaining({ stage: "started" }),
++      dbClient,
++    );
++  });
++
++  it("blocks batches with unresolved exceptions", async () => {
++    loadBatchPublicationSnapshotMock.mockReset();
++    loadBatchPublicationSnapshotMock.mockResolvedValueOnce({
++      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      tenantId: "11111111-1111-4111-8111-111111111111",
++      validationStatus: "validated",
++      routingStatus: "completed",
++      routingTotalCount: 2,
++      routingMatchedCount: 2,
++      routingPendingCount: 0,
++      routingFailedCount: 0,
++      routingAmbiguousCount: 0,
++      routingBlockedReason: null,
++      routingProcessedAt: "2026-04-13T12:00:00.000Z",
++      publicationStatus: "pending",
++      publicationAttempts: 0,
++      publishedAt: null,
++      publishedBy: null,
++      lastPublicationCorrelationId: null,
++      lastPublicationIdempotencyKey: null,
++      lastPublicationError: null,
++    });
++    loadBatchPublicationExceptionsMock.mockResolvedValueOnce([
++      { currentState: "pending" },
++    ]);
++
++    await expect(
++      publishBatch(
++        {
++          tenantId: "11111111-1111-4111-8111-111111111111",
++          batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++          correlationId: "11111111-1111-4111-8111-111111111111",
++          idempotencyKey: "idem-123456",
++        },
++        dbClient as never,
++      ),
++    ).rejects.toThrow(BatchPublicationError);
++
++    expect(dbClient.transaction).not.toHaveBeenCalled();
++    expect(markBatchPublicationStartingMock).not.toHaveBeenCalled();
++  });
++});
+\ No newline at end of file
+
+
+
+diff --git a/drizzle/migrations/20260409_exceptions.sql b/drizzle/migrations/20260409_exceptions.sql
+new file mode 100644
+--- /dev/null
++++ b/drizzle/migrations/20260409_exceptions.sql
+
++++ b/drizzle/migrations/20260409_exceptions.sql
+@@ -0,0 +1,45 @@
++CREATE TYPE "public"."exception_error_category" AS ENUM('not-found', 'invalid-format', 'ambiguous-routing', 'other');--> statement-breakpoint
++CREATE TYPE "public"."exception_priority" AS ENUM('high', 'medium', 'low');--> statement-breakpoint
++CREATE TYPE "public"."exception_state" AS ENUM('pending', 'in-treatment', 'resolved', 'blocked');--> statement-breakpoint
++CREATE TYPE "public"."exception_correction_result" AS ENUM('reprocessable', 'reject', 'publish-with-evidence');--> statement-breakpoint
++CREATE TABLE "exceptions" (
++	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
++	"batch_id" uuid NOT NULL,
++	"tenant_id" uuid NOT NULL,
++	"document_external_id" text NOT NULL,
++	"associated_employee_id" uuid,
++	"assoc_employee_external_id" text,
++	"routing_ambiguity_details" jsonb,
++	"error_category" "public"."exception_error_category" DEFAULT 'other' NOT NULL,
++	"priority" "public"."exception_priority" DEFAULT 'medium' NOT NULL,
++	"current_state" "public"."exception_state" DEFAULT 'pending' NOT NULL,
++	"recommended_action" text,
++	"correction_applied" text,
++	"correction_result" "public"."exception_correction_result",
++	"resolved_by" uuid,
++	"resolved_at" timestamp with time zone,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE "exception_actions" (
++	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
++	"exception_id" uuid NOT NULL,
++	"tenant_id" uuid NOT NULL,
++	"action_description" text NOT NULL,
++	"expected_result" "public"."exception_correction_result",
++	"actor_id" uuid NOT NULL,
++	"performed_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++ALTER TABLE "exceptions" ADD CONSTRAINT "exceptions_batch_id_batches_id_fk" FOREIGN KEY ("batch_id") REFERENCES "public"."batches"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exceptions" ADD CONSTRAINT "exceptions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exceptions" ADD CONSTRAINT "exceptions_associated_employee_id_users_id_fk" FOREIGN KEY ("associated_employee_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exceptions" ADD CONSTRAINT "exceptions_resolved_by_users_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exception_actions" ADD CONSTRAINT "exception_actions_exception_id_exceptions_id_fk" FOREIGN KEY ("exception_id") REFERENCES "public"."exceptions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exception_actions" ADD CONSTRAINT "exception_actions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "exception_actions" ADD CONSTRAINT "exception_actions_actor_id_users_id_fk" FOREIGN KEY ("actor_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
++CREATE INDEX "exceptions_batch_tenant_idx" ON "exceptions" USING btree ("batch_id","tenant_id");--> statement-breakpoint
++CREATE INDEX "exceptions_tenant_state_idx" ON "exceptions" USING btree ("tenant_id","current_state");--> statement-breakpoint
++CREATE INDEX "exceptions_tenant_priority_idx" ON "exceptions" USING btree ("tenant_id","priority");--> statement-breakpoint
++CREATE INDEX "exception_actions_exception_idx" ON "exception_actions" USING btree ("exception_id");--> statement-breakpoint
+\ No newline at end of file
+
+
+
+diff --git a/drizzle/migrations/20260413_publication_tracking.sql b/drizzle/migrations/20260413_publication_tracking.sql
+new file mode 100644
+--- /dev/null
++++ b/drizzle/migrations/20260413_publication_tracking.sql
+
++++ b/drizzle/migrations/20260413_publication_tracking.sql
+@@ -0,0 +1,10 @@
++CREATE TYPE "batch_publication_status" AS ENUM ('pending', 'publishing', 'published', 'failed');
++--> statement-breakpoint
++ALTER TABLE "batches"
++  ADD COLUMN "publication_status" "batch_publication_status" DEFAULT 'pending' NOT NULL,
++  ADD COLUMN "publication_attempts" integer DEFAULT 0 NOT NULL,
++  ADD COLUMN "published_at" timestamp with time zone,
++  ADD COLUMN "published_by" uuid REFERENCES "users"("id") ON DELETE SET NULL,
++  ADD COLUMN "last_publication_correlation_id" uuid,
++  ADD COLUMN "last_publication_idempotency_key" text,
++  ADD COLUMN "last_publication_error" text;
+\ No newline at end of file
+
+
+
+diff --git a/src/app/(rh)/auditoria/page.tsx b/src/app/(rh)/auditoria/page.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/app/(rh)/auditoria/page.tsx
+
++++ b/src/app/(rh)/auditoria/page.tsx
+@@ -0,0 +1,248 @@
++import { and, eq } from "drizzle-orm";
++import { cookies } from "next/headers";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import { listAuditEvents, AuditEventsError } from "@/modules/audit/application/list-audit-events";
++import { StatusTimeline } from "@/components/audit/status-timeline";
++import type { AuditEventRecord, AuditTimelineEntry } from "@/modules/audit/domain/audit-event-filters";
++
++type RhAuditSearchParams = {
++  from?: string;
++  to?: string;
++  batch_id?: string;
++  document_id?: string;
++  user_id?: string;
++  page?: string;
++  page_size?: string;
++};
++
++type AuditPagination = {
++  page: number;
++  page_size: number;
++  total: number;
++  total_pages: number;
++};
++
++type RhAuditFilters = {
++  from: string;
++  to: string;
++  batch_id: string;
++  document_id: string;
++  user_id: string;
++  page: number;
++  page_size: number;
++};
++
++function parsePositiveInteger(value: string | undefined, fallback: number): number {
++  const parsed = Number.parseInt(value ?? `${fallback}`, 10);
++  if (!Number.isFinite(parsed) || parsed <= 0) {
++    return fallback;
++  }
++
++  return parsed;
++}
++
++export function buildAuditFilters(searchParams?: RhAuditSearchParams): RhAuditFilters {
++  return {
++    from: searchParams?.from ?? "",
++    to: searchParams?.to ?? "",
++    batch_id: searchParams?.batch_id ?? "",
++    document_id: searchParams?.document_id ?? "",
++    user_id: searchParams?.user_id ?? "",
++    page: parsePositiveInteger(searchParams?.page, 1),
++    page_size: parsePositiveInteger(searchParams?.page_size, 20),
++  };
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++async function loadAuditData(filters: RhAuditFilters) {
++  const sessionToken = cookies().get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      errorMessage: "Sessao ausente.",
++    };
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      errorMessage: "Sessao invalida ou expirada.",
++    };
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      errorMessage: "Usuario sem permissao no tenant.",
++    };
++  }
++
++  const allowedRoles: RbacRole[] = ["rh_operator", "rh_gestor", "suporte", "admin_plataforma"];
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++
++    if (!allowedRoles.includes(role)) {
++      return {
++        events: [] as AuditEventRecord[],
++        timeline: [] as AuditTimelineEntry[],
++        pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++        errorMessage: "Perfil sem permissao para consultar auditoria.",
++      };
++    }
++
++    const data = await listAuditEvents({
++      tenantId: session.tenantId,
++      from: filters.from || undefined,
++      to: filters.to || undefined,
++      batchId: filters.batch_id || undefined,
++      documentId: filters.document_id || undefined,
++      userId: filters.user_id || undefined,
++      page: filters.page,
++      pageSize: filters.page_size,
++    });
++
++    return {
++      events: data.events,
++      timeline: data.timeline,
++      pagination: data.pagination,
++      errorMessage: null,
++    };
++  } catch (error) {
++    if (error instanceof AuditEventsError) {
++      return {
++        events: [] as AuditEventRecord[],
++        timeline: [] as AuditTimelineEntry[],
++        pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++        errorMessage: error.message,
++      };
++    }
++
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      errorMessage: "Falha ao carregar trilha de auditoria.",
++    };
++  }
++}
++
++export function RhAuditPageView(props: {
++  filters: RhAuditFilters;
++  events: AuditEventRecord[];
++  timeline: AuditTimelineEntry[];
++  pagination: AuditPagination;
++  errorMessage?: string | null;
++}) {
++  const { filters, events, timeline, pagination, errorMessage } = props;
++
++  return (
++    <main>
++      <h1>Trilha de auditoria</h1>
++
++      <section aria-label="Filtrar eventos">
++        <h2>Filtrar eventos</h2>
++        <form method="get">
++          <label>
++            De
++            <input type="datetime-local" name="from" defaultValue={filters.from} />
++          </label>
++          <label>
++            Ate
++            <input type="datetime-local" name="to" defaultValue={filters.to} />
++          </label>
++          <label>
++            Lote
++            <input type="text" name="batch_id" defaultValue={filters.batch_id} />
++          </label>
++          <label>
++            Documento
++            <input type="text" name="document_id" defaultValue={filters.document_id} />
++          </label>
++          <label>
++            Usuario
++            <input type="text" name="user_id" defaultValue={filters.user_id} />
++          </label>
++          <label>
++            Pagina
++            <input type="number" min={1} name="page" defaultValue={filters.page} />
++          </label>
++          <label>
++            Itens por pagina
++            <input type="number" min={1} max={100} name="page_size" defaultValue={filters.page_size} />
++          </label>
++          <button type="submit">Aplicar filtros</button>
++        </form>
++      </section>
++
++      {errorMessage ? <p role="status">{errorMessage}</p> : null}
++
++      <section aria-label="Lista de eventos">
++        <h2>Eventos</h2>
++        {events.length === 0 ? (
++          <p>Nenhum evento encontrado para os filtros atuais.</p>
++        ) : (
++          <ul>
++            {events.map((event) => (
++              <li key={event.id}>
++                <strong>{event.action}</strong>
++                <div>Status: {event.status}</div>
++                <div>Recurso: {event.resource_type}</div>
++                <div>Recurso ID: {event.resource_id}</div>
++                <div>Correlation ID: {event.correlation_id}</div>
++                <div>Ator: {event.actor_id ?? "sistema"}</div>
++                <div>Data: {event.created_at}</div>
++              </li>
++            ))}
++          </ul>
++        )}
++        <p>
++          Pagina {pagination.page} de {pagination.total_pages} - Total de eventos: {pagination.total}
++        </p>
++      </section>
++
++      <StatusTimeline items={timeline} />
++    </main>
++  );
++}
++
++export default async function RhAuditoriaPage({ searchParams }: { searchParams?: RhAuditSearchParams }) {
++  const filters = buildAuditFilters(searchParams);
++  const data = await loadAuditData(filters);
++
++  return (
++    <RhAuditPageView
++      filters={filters}
++      events={data.events}
++      timeline={data.timeline}
++      pagination={data.pagination}
++      errorMessage={data.errorMessage}
++    />
++  );
++}
+
+
+
+diff --git a/src/app/(rh)/excecoes/page.tsx b/src/app/(rh)/excecoes/page.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/app/(rh)/excecoes/page.tsx
+
++++ b/src/app/(rh)/excecoes/page.tsx
+@@ -0,0 +1,120 @@
++import { and, eq } from "drizzle-orm";
++import { cookies } from "next/headers";
++import { ExceptionQueuePage } from "@/components/exceptions/ExceptionQueuePage";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import { exceptionPriorities, exceptionStates, type ExceptionPriority, type ExceptionState } from "@/modules/exceptions/domain/exception";
++import { listBatchExceptions } from "@/modules/exceptions/application/list-exceptions";
++import { ExceptionWorkflowError } from "@/modules/exceptions/infrastructure/exception-repository";
++
++type RhExceptionsSearchParams = {
++  batchId?: string;
++  priority?: string;
++  state?: string;
++  skip?: string;
++  take?: string;
++};
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++function parseEnumValue<T extends readonly string[]>(value: string | undefined, allowed: T): T[number] | undefined {
++  if (!value) {
++    return undefined;
++  }
++
++  return (allowed as readonly string[]).includes(value) ? (value as T[number]) : undefined;
++}
++
++async function loadInitialQueue(searchParams?: RhExceptionsSearchParams) {
++  const batchId = searchParams?.batchId?.trim() ?? "";
++  const priority = parseEnumValue(searchParams?.priority, exceptionPriorities);
++  const state = parseEnumValue(searchParams?.state, exceptionStates);
++  const skip = Number.parseInt(searchParams?.skip ?? "0", 10);
++  const take = Number.parseInt(searchParams?.take ?? "20", 10);
++
++  if (!batchId) {
++    return { initialBatchId: "", initialErrorMessage: null };
++  }
++
++  const sessionToken = cookies().get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return { initialBatchId: batchId, initialErrorMessage: "Sessao ausente." };
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return { initialBatchId: batchId, initialErrorMessage: "Sessao invalida ou expirada." };
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return { initialBatchId: batchId, initialErrorMessage: "Usuario sem permissao no tenant." };
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++
++    if (role !== "rh_operator") {
++      return { initialBatchId: batchId, initialErrorMessage: "Somente RH operador pode consultar excecoes." };
++    }
++
++    const result = await listBatchExceptions({
++      tenantId: session.tenantId,
++      batchId,
++      priority: priority as ExceptionPriority | undefined,
++      state: state as ExceptionState | undefined,
++      skip: Number.isFinite(skip) && skip >= 0 ? skip : 0,
++      take: Number.isFinite(take) && take > 0 ? Math.min(take, 100) : 20,
++    });
++
++    return {
++      initialBatchId: batchId,
++      initialItems: result.exceptions,
++      initialMetadata: result.metadata,
++      initialErrorMessage: null,
++      initialFilters: {
++        batchId,
++        priority: priority ?? "",
++        state: state ?? "",
++        skip: Number.isFinite(skip) && skip >= 0 ? skip : 0,
++        take: Number.isFinite(take) && take > 0 ? Math.min(take, 100) : 20,
++      },
++    };
++  } catch (error) {
++    if (error instanceof ExceptionWorkflowError || error instanceof Error) {
++      return { initialBatchId: batchId, initialErrorMessage: error.message };
++    }
++
++    return { initialBatchId: batchId, initialErrorMessage: "Falha ao carregar fila de excecoes." };
++  }
++}
++
++export default async function RhExceptionsPage({ searchParams }: { searchParams?: RhExceptionsSearchParams }) {
++  const initial = await loadInitialQueue(searchParams);
++
++  return (
++    <ExceptionQueuePage
++      initialBatchId={initial.initialBatchId}
++      initialItems={initial.initialItems}
++      initialMetadata={initial.initialMetadata}
++      initialErrorMessage={initial.initialErrorMessage}
++      initialFilters={initial.initialFilters}
++    />
++  );
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/app/api/v1/audit-events/route.ts b/src/app/api/v1/audit-events/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/api/v1/audit-events/route.ts
+
++++ b/src/app/api/v1/audit-events/route.ts
+@@ -0,0 +1,173 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import {
++  assertTenantAction,
++  RBAC_ACTIONS,
++  type RbacRole,
++} from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++import {
++  AuditEventsError,
++  listAuditEvents,
++} from "@/modules/audit/application/list-audit-events";
++
++const querySchema = z
++  .object({
++    from: z.string().datetime().optional(),
++    to: z.string().datetime().optional(),
++    batch_id: z.string().uuid().optional(),
++    document_id: z.string().uuid().optional(),
++    user_id: z.string().uuid().optional(),
++    page: z.coerce.number().int().min(1).optional().default(1),
++    page_size: z.coerce.number().int().min(1).max(100).optional().default(20),
++  })
++  .superRefine((value, context) => {
++    if (value.batch_id && value.document_id) {
++      context.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: "batch_id e document_id nao podem ser usados juntos.",
++        path: ["batch_id"],
++      });
++    }
++
++    if (value.from && value.to) {
++      const from = new Date(value.from).getTime();
++      const to = new Date(value.to).getTime();
++      if (!Number.isNaN(from) && !Number.isNaN(to) && from > to) {
++        context.addIssue({
++          code: z.ZodIssueCode.custom,
++          message: "Periodo invalido.",
++          path: ["from"],
++        });
++      }
++    }
++  });
++
++function withCorrelationHeader(response: NextResponse, correlationId: string) {
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++function jsonResponse<T>(
++  body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
++  correlationId: string,
++  init?: ResponseInit,
++) {
++  return withCorrelationHeader(NextResponse.json(body, init), correlationId);
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++export async function GET(request: NextRequest) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const parsedQuery = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
++
++  if (!parsedQuery.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Parametros de consulta invalidos.", correlationId, {
++        issues: parsedQuery.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++  } catch (error) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
++        cause: (error as Error).message,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const allowedRoles: RbacRole[] = ["rh_operator", "rh_gestor", "suporte", "admin_plataforma"];
++  if (!allowedRoles.includes(role)) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Perfil sem permissao para consultar auditoria.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    const result = await listAuditEvents({
++      tenantId: session.tenantId,
++      from: parsedQuery.data.from,
++      to: parsedQuery.data.to,
++      batchId: parsedQuery.data.batch_id,
++      documentId: parsedQuery.data.document_id,
++      userId: parsedQuery.data.user_id,
++      page: parsedQuery.data.page,
++      pageSize: parsedQuery.data.page_size,
++    });
++
++    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
++  } catch (error) {
++    if (error instanceof AuditEventsError) {
++      return jsonResponse(
++        errorResponse(error.code, error.message, correlationId, error.details),
++        correlationId,
++        { status: error.statusCode },
++      );
++    }
++
++    return jsonResponse(
++      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao consultar trilha de auditoria.", correlationId),
++      correlationId,
++      { status: 500 },
++    );
++  }
++}
+
+
+
+diff --git a/src/app/api/v1/batches/[batch-id]/exceptions/route.ts b/src/app/api/v1/batches/[batch-id]/exceptions/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/api/v1/batches/[batch-id]/exceptions/route.ts
+
++++ b/src/app/api/v1/batches/[batch-id]/exceptions/route.ts
+@@ -0,0 +1,147 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import { listBatchExceptions } from "@/modules/exceptions/application/list-exceptions";
++import { ExceptionWorkflowError } from "@/modules/exceptions/infrastructure/exception-repository";
++import { exceptionPriorities, exceptionStates } from "@/modules/exceptions/domain/exception";
++import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
++
++const paramsSchema = z.object({
++  batchId: z.string().uuid(),
++});
++
++const querySchema = z.object({
++  priority: z.enum(exceptionPriorities).optional(),
++  state: z.enum(exceptionStates).optional(),
++  skip: z.coerce.number().int().min(0).default(0),
++  take: z.coerce.number().int().min(1).max(100).default(20),
++});
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++function jsonResponse(body: ReturnType<typeof errorResponse> | ReturnType<typeof successResponse>, correlationId: string, init?: ResponseInit) {
++  const response = NextResponse.json(body, init);
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++export async function GET(
++  request: NextRequest,
++  context: { params: Promise<{ batchId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const paramsParsed = paramsSchema.safeParse(await context.params);
++
++  if (!paramsParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Identificador de lote invalido.", correlationId, {
++        issues: paramsParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const queryParsed = querySchema.safeParse({
++    priority: request.nextUrl.searchParams.get("priority") ?? undefined,
++    state: request.nextUrl.searchParams.get("state") ?? undefined,
++    skip: request.nextUrl.searchParams.get("skip") ?? undefined,
++    take: request.nextUrl.searchParams.get("take") ?? undefined,
++  });
++
++  if (!queryParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Filtros de excecao invalidos.", correlationId, {
++        issues: queryParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, { status: 401 });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId), correlationId, { status: 401 });
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++  } catch (error) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, { cause: (error as Error).message }), correlationId, { status: 403 });
++  }
++
++  if (role !== "rh_operator") {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Somente RH operador pode consultar excecoes.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    const result = await listBatchExceptions({
++      tenantId: session.tenantId,
++      batchId: paramsParsed.data.batchId,
++      priority: queryParsed.data.priority,
++      state: queryParsed.data.state,
++      skip: queryParsed.data.skip,
++      take: queryParsed.data.take,
++    });
++
++    return jsonResponse(
++      successResponse(
++        {
++          batch_id: paramsParsed.data.batchId,
++          exceptions: result.exceptions,
++          metadata: result.metadata,
++          filters: {
++            priority: queryParsed.data.priority ?? null,
++            state: queryParsed.data.state ?? null,
++            skip: queryParsed.data.skip,
++            take: queryParsed.data.take,
++          },
++        },
++        correlationId,
++        session.tenantId,
++      ),
++      correlationId,
++    );
++  } catch (error) {
++    if (error instanceof ExceptionWorkflowError) {
++      return jsonResponse(errorResponse(error.code, error.message, correlationId, error.details), correlationId, {
++        status: error.statusCode,
++      });
++    }
++
++    return jsonResponse(errorResponse("INTERNAL_SERVER_ERROR", "Falha ao consultar fila de excecoes.", correlationId), correlationId, { status: 500 });
++  }
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/app/api/v1/exceptions/[exception-id]/actions/route.ts b/src/app/api/v1/exceptions/[exception-id]/actions/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/api/v1/exceptions/[exception-id]/actions/route.ts
+
++++ b/src/app/api/v1/exceptions/[exception-id]/actions/route.ts
+@@ -0,0 +1,134 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { exceptions, userTenantMappings } from "@/lib/db/schema";
++import { recordCorrectiveExceptionAction } from "@/modules/exceptions/application/record-exception-action";
++import { exceptionCorrectionResults } from "@/modules/exceptions/domain/exception";
++import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
++
++const paramsSchema = z.object({
++  exceptionId: z.string().uuid(),
++});
++
++const bodySchema = z.object({
++  action_description: z.string().trim().min(10).max(4000),
++  expected_result: z.enum(exceptionCorrectionResults),
++});
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++function jsonResponse(body: ReturnType<typeof errorResponse> | ReturnType<typeof successResponse>, correlationId: string, init?: ResponseInit) {
++  const response = NextResponse.json(body, init);
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++export async function POST(
++  request: NextRequest,
++  context: { params: Promise<{ exceptionId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const paramsParsed = paramsSchema.safeParse(await context.params);
++
++  if (!paramsParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Identificador de excecao invalido.", correlationId, {
++        issues: paramsParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, { status: 401 });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId), correlationId, { status: 401 });
++  }
++
++  const bodyParsed = bodySchema.safeParse(await request.json().catch(() => null));
++  if (!bodyParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Payload de acao corretiva invalido.", correlationId, {
++        issues: bodyParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantWrite,
++    });
++  } catch (error) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, { cause: (error as Error).message }), correlationId, { status: 403 });
++  }
++
++  if (role !== "rh_operator") {
++    return jsonResponse(errorResponse("FORBIDDEN", "Somente RH operador pode registrar acoes corretivas.", correlationId), correlationId, { status: 403 });
++  }
++
++  const ownership = await db
++    .select({ tenantId: exceptions.tenantId })
++    .from(exceptions)
++    .where(eq(exceptions.id, paramsParsed.data.exceptionId))
++    .limit(1);
++
++  const existing = ownership[0];
++  if (!existing) {
++    return jsonResponse(errorResponse("NOT_FOUND", "Excecao nao encontrada.", correlationId), correlationId, { status: 404 });
++  }
++
++  if (existing.tenantId !== session.tenantId) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado para excecao de outro tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    const result = await recordCorrectiveExceptionAction({
++      tenantId: session.tenantId,
++      exceptionId: paramsParsed.data.exceptionId,
++      actorId: session.userId,
++      actionDescription: bodyParsed.data.action_description,
++      expectedResult: bodyParsed.data.expected_result,
++    });
++
++    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId, { status: 201 });
++  } catch (error) {
++    if (error instanceof Error && "statusCode" in error) {
++      const workflowError = error as Error & { code?: string; statusCode?: number; details?: Record<string, unknown> };
++      return jsonResponse(
++        errorResponse(workflowError.code ?? "INTERNAL_SERVER_ERROR", workflowError.message, correlationId, workflowError.details),
++        correlationId,
++        { status: workflowError.statusCode ?? 500 },
++      );
++    }
++
++    return jsonResponse(errorResponse("INTERNAL_SERVER_ERROR", "Falha ao registrar acao corretiva.", correlationId), correlationId, { status: 500 });
++  }
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/app/api/v1/exceptions/[exception-id]/route.ts b/src/app/api/v1/exceptions/[exception-id]/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/api/v1/exceptions/[exception-id]/route.ts
+
++++ b/src/app/api/v1/exceptions/[exception-id]/route.ts
+@@ -0,0 +1,220 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { exceptions, userTenantMappings } from "@/lib/db/schema";
++import { getExceptionDetail, updateExceptionState } from "@/modules/exceptions/infrastructure/exception-repository";
++import { exceptionStates } from "@/modules/exceptions/domain/exception";
++import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
++
++const paramsSchema = z.object({
++  exceptionId: z.string().uuid(),
++});
++
++const patchBodySchema = z.object({
++  new_state: z.enum(exceptionStates),
++  note: z.string().trim().min(3).max(1000).optional(),
++});
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++function jsonResponse(body: ReturnType<typeof errorResponse> | ReturnType<typeof successResponse>, correlationId: string, init?: ResponseInit) {
++  const response = NextResponse.json(body, init);
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++export async function GET(
++  request: NextRequest,
++  context: { params: Promise<{ exceptionId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const paramsParsed = paramsSchema.safeParse(await context.params);
++
++  if (!paramsParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Identificador de excecao invalido.", correlationId, {
++        issues: paramsParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, { status: 401 });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId), correlationId, { status: 401 });
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++  } catch (error) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, { cause: (error as Error).message }), correlationId, { status: 403 });
++  }
++
++  if (role !== "rh_operator") {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Somente RH operador pode consultar excecoes.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const ownership = await db
++    .select({ tenantId: exceptions.tenantId })
++    .from(exceptions)
++    .where(eq(exceptions.id, paramsParsed.data.exceptionId))
++    .limit(1);
++
++  const existing = ownership[0];
++  if (!existing) {
++    return jsonResponse(errorResponse("NOT_FOUND", "Excecao nao encontrada.", correlationId), correlationId, { status: 404 });
++  }
++
++  if (existing.tenantId !== session.tenantId) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Acesso negado para excecao de outro tenant.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const detail = await getExceptionDetail({ tenantId: session.tenantId, exceptionId: paramsParsed.data.exceptionId });
++  if (!detail) {
++    return jsonResponse(errorResponse("NOT_FOUND", "Excecao nao encontrada.", correlationId), correlationId, { status: 404 });
++  }
++
++  return jsonResponse(
++    successResponse({ exception: detail }, correlationId, session.tenantId),
++    correlationId,
++  );
++}
++
++export async function PATCH(
++  request: NextRequest,
++  context: { params: Promise<{ exceptionId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const paramsParsed = paramsSchema.safeParse(await context.params);
++
++  if (!paramsParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Identificador de excecao invalido.", correlationId, {
++        issues: paramsParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, { status: 401 });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId), correlationId, { status: 401 });
++  }
++
++  const bodyParsed = patchBodySchema.safeParse(await request.json().catch(() => null));
++  if (!bodyParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Payload de atualizacao de excecao invalido.", correlationId, {
++        issues: bodyParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantWrite,
++    });
++  } catch (error) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, { cause: (error as Error).message }), correlationId, { status: 403 });
++  }
++
++  if (role !== "rh_operator") {
++    return jsonResponse(errorResponse("FORBIDDEN", "Somente RH operador pode atualizar excecoes.", correlationId), correlationId, { status: 403 });
++  }
++
++  const ownership = await db
++    .select({ tenantId: exceptions.tenantId })
++    .from(exceptions)
++    .where(eq(exceptions.id, paramsParsed.data.exceptionId))
++    .limit(1);
++
++  const existing = ownership[0];
++  if (!existing) {
++    return jsonResponse(errorResponse("NOT_FOUND", "Excecao nao encontrada.", correlationId), correlationId, { status: 404 });
++  }
++
++  if (existing.tenantId !== session.tenantId) {
++    return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado para excecao de outro tenant.", correlationId), correlationId, { status: 403 });
++  }
++
++  try {
++    const result = await updateExceptionState({
++      tenantId: session.tenantId,
++      exceptionId: paramsParsed.data.exceptionId,
++      nextState: bodyParsed.data.new_state,
++      note: bodyParsed.data.note,
++      actorId: session.userId,
++    });
++
++    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
++  } catch (error) {
++    if (error instanceof Error && "statusCode" in error) {
++      const workflowError = error as Error & { code?: string; statusCode?: number; details?: Record<string, unknown> };
++      return jsonResponse(
++        errorResponse(
++          workflowError.code ?? "INTERNAL_SERVER_ERROR",
++          workflowError.message,
++          correlationId,
++          workflowError.details,
++        ),
++        correlationId,
++        { status: workflowError.statusCode ?? 500 },
++      );
++    }
++
++    return jsonResponse(errorResponse("INTERNAL_SERVER_ERROR", "Falha ao atualizar excecao.", correlationId), correlationId, { status: 500 });
++  }
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/app/api/v1/rh/batches/[batchId]/publish/route.ts b/src/app/api/v1/rh/batches/[batchId]/publish/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/api/v1/rh/batches/[batchId]/publish/route.ts
+
++++ b/src/app/api/v1/rh/batches/[batchId]/publish/route.ts
+@@ -0,0 +1,159 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import {
++  assertTenantAction,
++  RBAC_ACTIONS,
++  type RbacRole,
++} from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++import {
++  BatchPublicationError,
++  publishBatch,
++} from "@/modules/batches/application/publish-batch";
++
++const paramsSchema = z.object({
++  batchId: z.string().uuid(),
++});
++
++const payloadSchema = z.object({
++  idempotency_key: z.string().trim().min(8).max(128),
++});
++
++function withCorrelationHeader(response: NextResponse, correlationId: string) {
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++function jsonResponse<T>(
++  body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
++  correlationId: string,
++  init?: ResponseInit,
++) {
++  return withCorrelationHeader(NextResponse.json(body, init), correlationId);
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++export async function POST(
++  request: NextRequest,
++  context: { params: Promise<{ batchId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const paramsParsed = paramsSchema.safeParse(await context.params);
++
++  if (!paramsParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Identificador de lote invalido.", correlationId, {
++        issues: paramsParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const bodyParsed = payloadSchema.safeParse(await request.json().catch(() => null));
++  if (!bodyParsed.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Payload de publicacao invalido.", correlationId, {
++        issues: bodyParsed.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantWrite,
++    });
++  } catch (error) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
++        cause: (error as Error).message,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  if (role !== "rh_operator") {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Somente RH operador pode publicar lote.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    const result = await publishBatch({
++      tenantId: session.tenantId,
++      batchId: paramsParsed.data.batchId,
++      actorId: session.userId,
++      correlationId,
++      idempotencyKey: bodyParsed.data.idempotency_key,
++    });
++
++    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
++  } catch (error) {
++    if (error instanceof BatchPublicationError) {
++      return jsonResponse(
++        errorResponse(error.code, error.message, correlationId, error.details),
++        correlationId,
++        { status: error.statusCode },
++      );
++    }
++
++    return jsonResponse(
++      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao publicar lote.", correlationId),
++      correlationId,
++      { status: 500 },
++    );
++  }
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/components/audit/status-timeline.tsx b/src/components/audit/status-timeline.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/audit/status-timeline.tsx
+
++++ b/src/components/audit/status-timeline.tsx
+@@ -0,0 +1,35 @@
++import type { AuditTimelineEntry } from "@/modules/audit/domain/audit-event-filters";
++
++function formatDateTime(value: string): string {
++  const parsed = new Date(value);
++  if (Number.isNaN(parsed.getTime())) {
++    return value;
++  }
++
++  return parsed.toLocaleString("pt-BR", {
++    dateStyle: "short",
++    timeStyle: "short",
++    timeZone: "UTC",
++  });
++}
++
++export function StatusTimeline({ items }: { items: AuditTimelineEntry[] }) {
++  return (
++    <section aria-label="Linha do tempo">
++      <h2>Linha do tempo</h2>
++      {items.length === 0 ? (
++        <p>Nenhum evento cronologico para os filtros atuais.</p>
++      ) : (
++        <ol>
++          {items.map((item) => (
++            <li key={item.event_id}>
++              <strong>{item.action}</strong>
++              <div>Status: {item.status}</div>
++              <div>Ocorrido em: {formatDateTime(item.occurred_at)}</div>
++            </li>
++          ))}
++        </ol>
++      )}
++    </section>
++  );
++}
+
+
+
+diff --git a/src/components/exceptions/ExceptionActionForm.tsx b/src/components/exceptions/ExceptionActionForm.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/exceptions/ExceptionActionForm.tsx
+
++++ b/src/components/exceptions/ExceptionActionForm.tsx
+@@ -0,0 +1,64 @@
++import { Alert, Button, MenuItem, Stack, TextField, Typography } from "@mui/material";
++import { exceptionCorrectionResults } from "@/modules/exceptions/domain/exception";
++
++export function ExceptionActionForm(props: {
++  actionDescription: string;
++  expectedResult: (typeof exceptionCorrectionResults)[number];
++  isSubmitting?: boolean;
++  errorMessage?: string | null;
++  successMessage?: string | null;
++  onActionDescriptionChange: (value: string) => void;
++  onExpectedResultChange: (value: (typeof exceptionCorrectionResults)[number]) => void;
++  onSubmit: () => void;
++  onCancel?: () => void;
++}) {
++  return (
++    <Stack spacing={2} component="section" aria-label="Formulario de acao corretiva">
++      <Typography variant="h6">Registrar acao corretiva</Typography>
++      <TextField
++        label="Descricao da correcao"
++        value={props.actionDescription}
++        onChange={(event) => props.onActionDescriptionChange(event.target.value)}
++        multiline
++        minRows={4}
++        fullWidth
++        required
++        slotProps={{
++          htmlInput: {
++            minLength: 10,
++            "aria-describedby": "exception-action-help",
++          },
++        }}
++        helperText="Explique de forma objetiva o que foi verificado ou corrigido."
++      />
++      <TextField
++        label="Resultado esperado"
++        value={props.expectedResult}
++        onChange={(event) => props.onExpectedResultChange(event.target.value as (typeof exceptionCorrectionResults)[number])}
++        select
++        fullWidth
++      >
++        {exceptionCorrectionResults.map((result) => (
++          <MenuItem key={result} value={result}>
++            {result}
++          </MenuItem>
++        ))}
++      </TextField>
++
++      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
++        <Button variant="contained" onClick={props.onSubmit} disabled={props.isSubmitting}>
++          {props.isSubmitting ? "Registrando..." : "Salvar acao"}
++        </Button>
++        <Button variant="outlined" onClick={props.onCancel} disabled={props.isSubmitting}>
++          Cancelar
++        </Button>
++      </Stack>
++
++      {props.successMessage ? <Alert severity="success">{props.successMessage}</Alert> : null}
++      {props.errorMessage ? <Alert severity="error">{props.errorMessage}</Alert> : null}
++      <Typography id="exception-action-help" variant="body2" color="text.secondary">
++        O registro gera trilha de auditoria com autor e horario.
++      </Typography>
++    </Stack>
++  );
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/components/exceptions/ExceptionDetailPanel.tsx b/src/components/exceptions/ExceptionDetailPanel.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/exceptions/ExceptionDetailPanel.tsx
+
++++ b/src/components/exceptions/ExceptionDetailPanel.tsx
+@@ -0,0 +1,118 @@
++import { Button, Divider, Paper, Stack, Typography } from "@mui/material";
++import { tokens } from "@/lib/theme/tokens";
++import {
++  getExceptionErrorCategoryLabel,
++  getExceptionPriorityLabel,
++  getExceptionStateLabel,
++  type ExceptionDetail,
++} from "@/modules/exceptions/domain/exception";
++import { ExceptionActionForm } from "./ExceptionActionForm";
++
++export function ExceptionDetailPanel(props: {
++  exception: ExceptionDetail | null;
++  actionDescription: string;
++  expectedResult: "reprocessable" | "reject" | "publish-with-evidence";
++  isSubmitting?: boolean;
++  errorMessage?: string | null;
++  successMessage?: string | null;
++  onActionDescriptionChange: (value: string) => void;
++  onExpectedResultChange: (value: "reprocessable" | "reject" | "publish-with-evidence") => void;
++  onSubmitAction: () => void;
++  onClose: () => void;
++  onPrevious?: () => void;
++  onNext?: () => void;
++}) {
++  if (!props.exception) {
++    return (
++      <Paper elevation={0} sx={{ p: 3, border: `1px solid ${tokens.colors.surface.border}` }}>
++        <Typography variant="body1" color="text.secondary">
++          Selecione uma excecao para ver o contexto completo.
++        </Typography>
++      </Paper>
++    );
++  }
++
++  return (
++    <Paper elevation={0} sx={{ p: 3, border: `1px solid ${tokens.colors.surface.border}` }}>
++      <Stack spacing={3}>
++        <Stack
++          direction={{ xs: "column", sm: "row" }}
++          spacing={2}
++          sx={{ justifyContent: "space-between" }}
++        >
++          <Stack spacing={0.5}>
++            <Typography variant="overline" sx={{ letterSpacing: 1.2 }}>
++              Detalhe da excecao
++            </Typography>
++            <Typography variant="h5">{props.exception.document_external_id}</Typography>
++            <Typography variant="body2" color="text.secondary">
++              {props.exception.batch_name}
++            </Typography>
++          </Stack>
++
++          <Stack direction="row" spacing={1}>
++            <Button variant="outlined" onClick={props.onPrevious} disabled={!props.onPrevious}>
++              Anterior
++            </Button>
++            <Button variant="outlined" onClick={props.onNext} disabled={!props.onNext}>
++              Proxima
++            </Button>
++            <Button variant="text" onClick={props.onClose}>
++              Voltar
++            </Button>
++          </Stack>
++        </Stack>
++
++        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
++          <Typography variant="body2">Categoria: {getExceptionErrorCategoryLabel(props.exception.error_category)}</Typography>
++          <Typography variant="body2">Prioridade: {getExceptionPriorityLabel(props.exception.priority)}</Typography>
++          <Typography variant="body2">Estado: {getExceptionStateLabel(props.exception.current_state)}</Typography>
++        </Stack>
++
++        <Typography variant="body2" color="text.secondary">
++          Acao recomendada: {props.exception.recommended_action ?? "Sem recomendacao registrada."}
++        </Typography>
++
++        <Stack spacing={1}>
++          <Typography variant="h6">Detalhes de erro</Typography>
++          <Typography variant="body2" color="text.secondary">
++            {props.exception.error_details ? JSON.stringify(props.exception.error_details) : "Sem detalhes adicionais."}
++          </Typography>
++        </Stack>
++
++        <Divider />
++
++        <Stack spacing={1.5}>
++          <Typography variant="h6">Historico de acoes</Typography>
++          {props.exception.actions_history.length === 0 ? (
++            <Typography variant="body2" color="text.secondary">
++              Nenhuma acao corretiva registrada.
++            </Typography>
++          ) : (
++            <Stack spacing={1.5} component="ol" sx={{ pl: 2, m: 0 }}>
++              {props.exception.actions_history.map((action) => (
++                <Typography component="li" variant="body2" key={action.id}>
++                  {action.actor_name ?? action.actor_id}: {action.action_description} ({action.expected_result ?? "sem resultado"})
++                </Typography>
++              ))}
++            </Stack>
++          )}
++        </Stack>
++
++        <Divider />
++
++        <ExceptionActionForm
++          actionDescription={props.actionDescription}
++          expectedResult={props.expectedResult}
++          isSubmitting={props.isSubmitting}
++          errorMessage={props.errorMessage}
++          successMessage={props.successMessage}
++          onActionDescriptionChange={props.onActionDescriptionChange}
++          onExpectedResultChange={props.onExpectedResultChange}
++          onSubmit={props.onSubmitAction}
++          onCancel={props.onClose}
++        />
++      </Stack>
++    </Paper>
++  );
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/components/exceptions/ExceptionQueueItem.tsx b/src/components/exceptions/ExceptionQueueItem.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/exceptions/ExceptionQueueItem.tsx
+
++++ b/src/components/exceptions/ExceptionQueueItem.tsx
+@@ -0,0 +1,111 @@
++import { Button, Chip, Paper, Stack, Typography } from "@mui/material";
++import PriorityHighOutlinedIcon from "@mui/icons-material/PriorityHighOutlined";
++import ReportProblemOutlinedIcon from "@mui/icons-material/ReportProblemOutlined";
++import DoneOutlineOutlinedIcon from "@mui/icons-material/DoneOutlineOutlined";
++import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
++import { tokens } from "@/lib/theme/tokens";
++import {
++  getExceptionPriorityLabel,
++  getExceptionStateLabel,
++  type ExceptionQueueItem,
++} from "@/modules/exceptions/domain/exception";
++
++function buildPriorityTone(priority: ExceptionQueueItem["priority"]) {
++  if (priority === "high") {
++    return { icon: <PriorityHighOutlinedIcon fontSize="small" />, color: tokens.colors.error };
++  }
++
++  if (priority === "medium") {
++    return { icon: <ReportProblemOutlinedIcon fontSize="small" />, color: tokens.colors.warning };
++  }
++
++  return { icon: <DoneOutlineOutlinedIcon fontSize="small" />, color: tokens.colors.success };
++}
++
++function buildStateTone(state: ExceptionQueueItem["current_state"]) {
++  if (state === "pending") {
++    return { icon: <ReportProblemOutlinedIcon fontSize="small" />, color: tokens.colors.pending };
++  }
++
++  if (state === "in-treatment") {
++    return { icon: <PriorityHighOutlinedIcon fontSize="small" />, color: tokens.colors.processing };
++  }
++
++  if (state === "resolved") {
++    return { icon: <DoneOutlineOutlinedIcon fontSize="small" />, color: tokens.colors.success };
++  }
++
++  return { icon: <LockOutlinedIcon fontSize="small" />, color: tokens.colors.error };
++}
++
++export function ExceptionQueueItem(props: {
++  item: ExceptionQueueItem;
++  onOpen: (exceptionId: string) => void;
++  onReprocess?: (exceptionId: string) => void;
++}) {
++  const priorityTone = buildPriorityTone(props.item.priority);
++  const stateTone = buildStateTone(props.item.current_state);
++
++  return (
++    <Paper
++      component="article"
++      elevation={0}
++      sx={{
++        p: 2,
++        border: `1px solid ${tokens.colors.surface.border}`,
++        borderRadius: 3,
++        background: tokens.colors.surface.card,
++      }}
++    >
++      <Stack spacing={1.5}>
++        <Stack
++          direction="row"
++          spacing={2}
++          sx={{ justifyContent: "space-between", alignItems: "flex-start" }}
++        >
++          <Stack spacing={0.25}>
++            <Typography variant="h3" component="h3">
++              {props.item.document_external_id}
++            </Typography>
++            <Typography variant="body2" color="text.secondary">
++              {props.item.batch_name}
++            </Typography>
++            <Typography variant="body2">
++              Colaborador previsto: {props.item.associated_employee_external_id ?? "Nao informado"}
++            </Typography>
++          </Stack>
++
++          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
++            <Chip
++              icon={priorityTone.icon}
++              label={`Prioridade ${getExceptionPriorityLabel(props.item.priority)}`}
++              aria-label={`Prioridade ${getExceptionPriorityLabel(props.item.priority)}`}
++              sx={{ backgroundColor: priorityTone.color, color: tokens.colors.text.inverse }}
++            />
++            <Chip
++              icon={stateTone.icon}
++              label={`Estado ${getExceptionStateLabel(props.item.current_state)}`}
++              aria-label={`Estado ${getExceptionStateLabel(props.item.current_state)}`}
++              sx={{ backgroundColor: stateTone.color, color: tokens.colors.text.inverse }}
++            />
++          </Stack>
++        </Stack>
++
++        <Typography variant="body2" color="text.secondary">
++          Acao recomendada: {props.item.recommended_action ?? "Revisar contexto do lote e registrar correcao."}
++        </Typography>
++
++        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
++          <Button variant="contained" onClick={() => props.onOpen(props.item.id)}>
++            Abrir detalhe
++          </Button>
++          {props.onReprocess ? (
++            <Button variant="outlined" onClick={() => props.onReprocess?.(props.item.id)}>
++              Abrir reprocessamento
++            </Button>
++          ) : null}
++        </Stack>
++      </Stack>
++    </Paper>
++  );
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/components/exceptions/ExceptionQueueList.tsx b/src/components/exceptions/ExceptionQueueList.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/exceptions/ExceptionQueueList.tsx
+
++++ b/src/components/exceptions/ExceptionQueueList.tsx
+@@ -0,0 +1,36 @@
++import { Alert, Stack, Typography } from "@mui/material";
++import { ExceptionQueueItem as ExceptionQueueCard } from "./ExceptionQueueItem";
++import type { ExceptionQueueItem } from "@/modules/exceptions/domain/exception";
++
++export function ExceptionQueueList(props: {
++  items: ExceptionQueueItem[];
++  isLoading?: boolean;
++  errorMessage?: string | null;
++  onOpen: (exceptionId: string) => void;
++  onReprocess?: (exceptionId: string) => void;
++}) {
++  if (props.isLoading) {
++    return <Alert severity="info">Carregando fila de excecoes...</Alert>;
++  }
++
++  if (props.errorMessage) {
++    return <Alert severity="error">{props.errorMessage}</Alert>;
++  }
++
++  if (props.items.length === 0) {
++    return <Alert severity="info">Nenhuma excecao encontrada com os filtros atuais.</Alert>;
++  }
++
++  return (
++    <Stack spacing={2}>
++      <Typography variant="body2" color="text.secondary" aria-live="polite">
++        {props.items.length} excecao(oes) listada(s)
++      </Typography>
++      <Stack spacing={2}>
++        {props.items.map((item) => (
++          <ExceptionQueueCard key={item.id} item={item} onOpen={props.onOpen} onReprocess={props.onReprocess} />
++        ))}
++      </Stack>
++    </Stack>
++  );
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/lib/db/schema/exception-actions.ts b/src/lib/db/schema/exception-actions.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/db/schema/exception-actions.ts
+
++++ b/src/lib/db/schema/exception-actions.ts
+@@ -0,0 +1,20 @@
++import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
++import { exceptionCorrectionResultEnum, exceptions } from "./exceptions";
++import { tenants } from "./tenants";
++import { users } from "./users";
++
++export const exceptionActions = pgTable("exception_actions", {
++  id: uuid("id").defaultRandom().primaryKey(),
++  exceptionId: uuid("exception_id")
++    .notNull()
++    .references(() => exceptions.id, { onDelete: "cascade" }),
++  tenantId: uuid("tenant_id")
++    .notNull()
++    .references(() => tenants.id, { onDelete: "restrict" }),
++  actionDescription: text("action_description").notNull(),
++  expectedResult: exceptionCorrectionResultEnum("expected_result"),
++  actorId: uuid("actor_id")
++    .notNull()
++    .references(() => users.id, { onDelete: "restrict" }),
++  performedAt: timestamp("performed_at", { withTimezone: true }).notNull().defaultNow(),
++});
+\ No newline at end of file
+
+
+
+diff --git a/src/lib/events/publisher.ts b/src/lib/events/publisher.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/events/publisher.ts
+
++++ b/src/lib/events/publisher.ts
+@@ -0,0 +1,20 @@
++export type DomainEvent = {
++  event_name: string;
++  event_version: string;
++  occurred_at: string;
++  correlation_id: string;
++  tenant_id: string;
++  actor: {
++    actor_id: string;
++    actor_role: string;
++  };
++  payload: Record<string, unknown>;
++};
++
++export function buildDomainEvent(input: DomainEvent): DomainEvent {
++  return input;
++}
++
++export async function publishDomainEvent(event: DomainEvent): Promise<DomainEvent> {
++  return event;
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/lib/rh/batches/publish-audit.ts b/src/lib/rh/batches/publish-audit.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/rh/batches/publish-audit.ts
+
++++ b/src/lib/rh/batches/publish-audit.ts
+@@ -0,0 +1,60 @@
++import { randomUUID } from "node:crypto";
++import { and, eq, sql } from "drizzle-orm";
++import { db } from "@/lib/db/client";
++import { auditLogs } from "@/lib/db/schema";
++
++type DbLike = typeof db;
++
++function normalizeUuidOrRandom(value: string): string {
++  const uuidPattern =
++    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++
++  return uuidPattern.test(value) ? value : randomUUID();
++}
++
++export async function writeBatchPublicationAudit(
++  params: {
++    tenantId: string;
++    actorId: string;
++    correlationId: string;
++    batchId: string;
++    status: "success" | "failure";
++    stage: "started" | "finished";
++    details: Record<string, unknown>;
++  },
++  dbClient: DbLike = db,
++): Promise<void> {
++  const idempotencyKey = typeof params.details.idempotency_key === "string" ? params.details.idempotency_key : null;
++
++  if (idempotencyKey) {
++    const existing = await dbClient
++      .select({ id: auditLogs.id })
++      .from(auditLogs)
++      .where(
++        and(
++          eq(auditLogs.tenantId, params.tenantId),
++          eq(auditLogs.action, `rh.batch.publication.${params.stage}.v1`),
++          eq(auditLogs.resourceType, "batch"),
++          eq(auditLogs.resourceId, params.batchId),
++          eq(auditLogs.status, params.status),
++          sql`${auditLogs.details} ->> 'idempotency_key' = ${idempotencyKey}`,
++        ),
++      )
++      .limit(1);
++
++    if (existing[0]) {
++      return;
++    }
++  }
++
++  await dbClient.insert(auditLogs).values({
++    tenantId: params.tenantId,
++    actorId: params.actorId,
++    correlationId: normalizeUuidOrRandom(params.correlationId),
++    action: `rh.batch.publication.${params.stage}.v1`,
++    resourceType: "batch",
++    resourceId: params.batchId,
++    status: params.status,
++    details: params.details,
++  });
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/modules/audit/application/list-audit-events.ts b/src/modules/audit/application/list-audit-events.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/audit/application/list-audit-events.ts
+
++++ b/src/modules/audit/application/list-audit-events.ts
+@@ -0,0 +1,56 @@
++import {
++  buildAuditTimeline,
++  normalizeAuditFilters,
++  type AuditFilterInput,
++} from "../domain/audit-event-filters";
++import {
++  AuditEventsError,
++  listAuditEventsFromDb,
++} from "../infrastructure/audit-events-repository";
++
++export { AuditEventsError };
++
++export async function listAuditEvents(input: {
++  tenantId: string;
++  from?: string;
++  to?: string;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++  page?: number;
++  pageSize?: number;
++}) {
++  let normalized: ReturnType<typeof normalizeAuditFilters>;
++
++  try {
++    normalized = normalizeAuditFilters({
++      from: input.from,
++      to: input.to,
++      batchId: input.batchId,
++      documentId: input.documentId,
++      userId: input.userId,
++      page: input.page,
++      pageSize: input.pageSize,
++    } satisfies AuditFilterInput);
++  } catch (error) {
++    throw new AuditEventsError("VALIDATION_ERROR", (error as Error).message, 400);
++  }
++
++  const result = await listAuditEventsFromDb({
++    tenantId: input.tenantId,
++    filters: normalized,
++  });
++
++  const totalPages = Math.max(1, Math.ceil(result.total / normalized.pageSize));
++
++  return {
++    events: result.events,
++    timeline: buildAuditTimeline(result.timelineEvents),
++    pagination: {
++      page: normalized.page,
++      page_size: normalized.pageSize,
++      total: result.total,
++      total_pages: totalPages,
++    },
++  };
++}
+
+
+
+diff --git a/src/modules/audit/domain/audit-event-filters.ts b/src/modules/audit/domain/audit-event-filters.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/audit/domain/audit-event-filters.ts
+
++++ b/src/modules/audit/domain/audit-event-filters.ts
+@@ -0,0 +1,90 @@
++export type AuditEventRecord = {
++  id: string;
++  action: string;
++  status: "success" | "failure";
++  resource_type: string;
++  resource_id: string;
++  actor_id: string | null;
++  correlation_id: string;
++  created_at: string;
++  details: Record<string, unknown> | null;
++};
++
++export type AuditTimelineEntry = {
++  event_id: string;
++  action: string;
++  status: "success" | "failure";
++  occurred_at: string;
++};
++
++export type AuditFilterInput = {
++  from?: string;
++  to?: string;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++  page?: number;
++  pageSize?: number;
++};
++
++export type NormalizedAuditFilters = {
++  from?: Date;
++  to?: Date;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++  page: number;
++  pageSize: number;
++};
++
++function parseIsoDate(value: string | undefined, label: string): Date | undefined {
++  if (!value) {
++    return undefined;
++  }
++
++  const parsed = new Date(value);
++  if (Number.isNaN(parsed.getTime())) {
++    throw new Error(`${label} invalido.`);
++  }
++
++  return parsed;
++}
++
++export function normalizeAuditFilters(input: AuditFilterInput): NormalizedAuditFilters {
++  const from = parseIsoDate(input.from, "from");
++  const to = parseIsoDate(input.to, "to");
++
++  if (from && to && from.getTime() > to.getTime()) {
++    throw new Error("Periodo invalido.");
++  }
++
++  const batchId = input.batchId?.trim() || undefined;
++  const documentId = input.documentId?.trim() || undefined;
++  if (batchId && documentId) {
++    throw new Error("Filtros batch_id e document_id nao podem ser usados juntos.");
++  }
++
++  const page = Math.max(1, input.page ?? 1);
++  const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 20));
++
++  return {
++    from,
++    to,
++    batchId,
++    documentId,
++    userId: input.userId?.trim() || undefined,
++    page,
++    pageSize,
++  };
++}
++
++export function buildAuditTimeline(events: Array<Pick<AuditEventRecord, "id" | "action" | "status" | "created_at">>): AuditTimelineEntry[] {
++  return [...events]
++    .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime())
++    .map((event) => ({
++      event_id: event.id,
++      action: event.action,
++      status: event.status,
++      occurred_at: event.created_at,
++    }));
++}
+
+
+
+diff --git a/src/modules/audit/infrastructure/audit-events-repository.ts b/src/modules/audit/infrastructure/audit-events-repository.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/audit/infrastructure/audit-events-repository.ts
+
++++ b/src/modules/audit/infrastructure/audit-events-repository.ts
+@@ -0,0 +1,138 @@
++import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
++import { db } from "@/lib/db/client";
++import { auditLogs } from "@/lib/db/schema";
++import type { AuditEventRecord, NormalizedAuditFilters } from "../domain/audit-event-filters";
++
++type DbLike = typeof db;
++
++export class AuditEventsError extends Error {
++  constructor(
++    public readonly code: string,
++    message: string,
++    public readonly statusCode: number,
++    public readonly details?: Record<string, unknown>,
++  ) {
++    super(message);
++    this.name = "AuditEventsError";
++  }
++}
++
++type AuditListResult = {
++  events: AuditEventRecord[];
++  timelineEvents: AuditEventRecord[];
++  total: number;
++};
++
++function mapAuditEvent(row: {
++  id: string;
++  action: string;
++  status: "success" | "failure";
++  resourceType: string;
++  resourceId: string;
++  actorId: string | null;
++  correlationId: string;
++  createdAt: Date;
++  details: Record<string, unknown> | null;
++}): AuditEventRecord {
++  return {
++    id: row.id,
++    action: row.action,
++    status: row.status,
++    resource_type: row.resourceType,
++    resource_id: row.resourceId,
++    actor_id: row.actorId,
++    correlation_id: row.correlationId,
++    created_at: row.createdAt.toISOString(),
++    details: row.details,
++  };
++}
++
++export async function listAuditEventsFromDb(
++  input: { tenantId: string; filters: NormalizedAuditFilters },
++  dbClient: DbLike = db,
++): Promise<AuditListResult> {
++  const baseConditions = [eq(auditLogs.tenantId, input.tenantId)];
++
++  if (input.filters.from) {
++    baseConditions.push(gte(auditLogs.createdAt, input.filters.from));
++  }
++
++  if (input.filters.to) {
++    baseConditions.push(lte(auditLogs.createdAt, input.filters.to));
++  }
++
++  if (input.filters.userId) {
++    baseConditions.push(eq(auditLogs.actorId, input.filters.userId));
++  }
++
++  if (input.filters.batchId) {
++    baseConditions.push(eq(auditLogs.resourceType, "batch"));
++    baseConditions.push(eq(auditLogs.resourceId, input.filters.batchId));
++  }
++
++  if (input.filters.documentId) {
++    baseConditions.push(eq(auditLogs.resourceId, input.filters.documentId));
++  }
++
++  const countRows = await dbClient
++    .select({ count: sql<number>`count(*)::int` })
++    .from(auditLogs)
++    .where(and(...baseConditions));
++
++  const total = countRows[0]?.count ?? 0;
++  const offset = (input.filters.page - 1) * input.filters.pageSize;
++
++  const rows = await dbClient
++    .select({
++      id: auditLogs.id,
++      action: auditLogs.action,
++      status: auditLogs.status,
++      resourceType: auditLogs.resourceType,
++      resourceId: auditLogs.resourceId,
++      actorId: auditLogs.actorId,
++      correlationId: auditLogs.correlationId,
++      createdAt: auditLogs.createdAt,
++      details: auditLogs.details,
++    })
++    .from(auditLogs)
++    .where(and(...baseConditions))
++    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
++    .limit(input.filters.pageSize)
++    .offset(offset);
++
++  const timelineConditions = [eq(auditLogs.tenantId, input.tenantId)];
++
++  if (input.filters.batchId) {
++    timelineConditions.push(eq(auditLogs.resourceType, "batch"));
++    timelineConditions.push(eq(auditLogs.resourceId, input.filters.batchId));
++  }
++
++  if (input.filters.documentId) {
++    timelineConditions.push(eq(auditLogs.resourceId, input.filters.documentId));
++  }
++
++  const timelineRows =
++    input.filters.batchId || input.filters.documentId
++      ? await dbClient
++          .select({
++            id: auditLogs.id,
++            action: auditLogs.action,
++            status: auditLogs.status,
++            resourceType: auditLogs.resourceType,
++            resourceId: auditLogs.resourceId,
++            actorId: auditLogs.actorId,
++            correlationId: auditLogs.correlationId,
++            createdAt: auditLogs.createdAt,
++            details: auditLogs.details,
++          })
++          .from(auditLogs)
++          .where(and(...timelineConditions))
++          .orderBy(auditLogs.createdAt, auditLogs.id)
++      : [];
++
++  return {
++    events: rows.map(mapAuditEvent),
++    timelineEvents: timelineRows.map(mapAuditEvent),
++    total,
++  };
++}
+
+
+
+diff --git a/src/modules/batches/application/publish-batch.ts b/src/modules/batches/application/publish-batch.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/batches/application/publish-batch.ts
+
++++ b/src/modules/batches/application/publish-batch.ts
+@@ -0,0 +1,321 @@
++import { db } from "@/lib/db/client";
++import { buildDomainEvent, publishDomainEvent } from "@/lib/events/publisher";
++import { buildBatchRoutingProgressFromRecord } from "@/lib/rh/batches/batch-progress";
++import { writeBatchPublicationAudit } from "@/lib/rh/batches/publish-audit";
++import {
++  loadBatchPublicationExceptions,
++  loadBatchPublicationSnapshot,
++  markBatchPublicationFailed,
++  markBatchPublicationStarting,
++  markBatchPublicationSucceeded,
++  type BatchPublicationSnapshot,
++} from "../infrastructure/batch-repository";
++
++export class BatchPublicationError extends Error {
++  constructor(
++    public readonly code: string,
++    message: string,
++    public readonly statusCode: number,
++    public readonly details?: Record<string, unknown>,
++  ) {
++    super(message);
++    this.name = "BatchPublicationError";
++  }
++}
++
++export type PublishBatchResult = ReturnType<typeof buildBatchRoutingProgressFromRecord> & {
++  total_requested: number;
++  total_published: number;
++  total_skipped: number;
++  total_failed: number;
++};
++
++function buildPublishedResult(snapshot: BatchPublicationSnapshot): PublishBatchResult {
++  const routingProgress = buildBatchRoutingProgressFromRecord({
++    id: snapshot.id,
++    tenantId: snapshot.tenantId,
++    routingStatus: snapshot.routingStatus as "pending" | "processing" | "blocked" | "completed" | "failed",
++    routingTotalCount: snapshot.routingTotalCount,
++    routingMatchedCount: snapshot.routingMatchedCount,
++    routingPendingCount: snapshot.routingPendingCount,
++    routingFailedCount: snapshot.routingFailedCount,
++    routingAmbiguousCount: snapshot.routingAmbiguousCount,
++    routingBlockedReason: snapshot.routingBlockedReason,
++    routingProcessedAt: snapshot.routingProcessedAt,
++    publicationStatus: snapshot.publicationStatus as "pending" | "publishing" | "published" | "failed",
++    publicationAttempts: snapshot.publicationAttempts,
++    publishedAt: snapshot.publishedAt,
++    publishedBy: snapshot.publishedBy,
++    lastPublicationCorrelationId: snapshot.lastPublicationCorrelationId,
++    lastPublicationIdempotencyKey: snapshot.lastPublicationIdempotencyKey,
++    lastPublicationError: snapshot.lastPublicationError,
++  });
++
++  return {
++    ...routingProgress,
++    total_requested: snapshot.routingTotalCount,
++    total_published: snapshot.routingMatchedCount,
++    total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
++    total_failed: 0,
++  };
++}
++
++export async function publishBatch(input: {
++  tenantId: string;
++  batchId: string;
++  actorId: string;
++  correlationId: string;
++  idempotencyKey: string;
++}, dbClient = db): Promise<PublishBatchResult> {
++  const snapshot = await loadBatchPublicationSnapshot(
++    { tenantId: input.tenantId, batchId: input.batchId },
++    dbClient,
++  );
++
++  if (!snapshot) {
++    throw new BatchPublicationError("NOT_FOUND", "Lote nao encontrado.", 404);
++  }
++
++  if (snapshot.tenantId !== input.tenantId) {
++    throw new BatchPublicationError("FORBIDDEN", "Acesso negado para lote de outro tenant.", 403);
++  }
++
++  if (snapshot.publicationStatus === "published") {
++    if (snapshot.lastPublicationIdempotencyKey === input.idempotencyKey) {
++      return buildPublishedResult(snapshot);
++    }
++
++    throw new BatchPublicationError(
++      "BATCH_ALREADY_PUBLISHED",
++      "O lote ja foi publicado.",
++      409,
++      {
++        publication_status: snapshot.publicationStatus,
++        last_publication_idempotency_key: snapshot.lastPublicationIdempotencyKey,
++      },
++    );
++  }
++
++  if (snapshot.publicationStatus === "publishing") {
++    if (snapshot.lastPublicationIdempotencyKey === input.idempotencyKey) {
++      throw new BatchPublicationError(
++        "BATCH_PUBLICATION_IN_PROGRESS",
++        "A publicacao deste lote ja esta em andamento.",
++        409,
++        {
++          publication_status: snapshot.publicationStatus,
++          last_publication_idempotency_key: snapshot.lastPublicationIdempotencyKey,
++        },
++      );
++    }
++
++    throw new BatchPublicationError(
++      "BATCH_PUBLICATION_IN_PROGRESS",
++      "A publicacao deste lote ja esta em andamento.",
++      409,
++      {
++        publication_status: snapshot.publicationStatus,
++        last_publication_idempotency_key: snapshot.lastPublicationIdempotencyKey,
++      },
++    );
++  }
++
++  if (snapshot.validationStatus !== "validated" || snapshot.routingStatus !== "completed") {
++    throw new BatchPublicationError(
++      "INVALID_BATCH_STATE",
++      "Lote nao esta pronto para publicacao.",
++      409,
++      {
++        validation_status: snapshot.validationStatus,
++        routing_status: snapshot.routingStatus,
++      },
++    );
++  }
++
++  const exceptionRows = await loadBatchPublicationExceptions(
++    { tenantId: input.tenantId, batchId: input.batchId },
++    dbClient,
++  );
++
++  const unresolvedStates = exceptionRows.filter(
++    (row) => row.currentState !== "resolved",
++  );
++
++  if (unresolvedStates.length > 0) {
++    throw new BatchPublicationError(
++      "INVALID_BATCH_STATE",
++      "Lote possui excecoes pendentes, em tratamento ou bloqueadas.",
++      409,
++      {
++        total_exceptions: exceptionRows.length,
++        unresolved_exceptions: unresolvedStates.length,
++      },
++    );
++  }
++
++  await writeBatchPublicationAudit(
++    {
++      tenantId: input.tenantId,
++      actorId: input.actorId,
++      correlationId: input.correlationId,
++      batchId: input.batchId,
++      status: "success",
++      stage: "started",
++      details: {
++        total_requested: snapshot.routingTotalCount,
++        total_published: snapshot.routingMatchedCount,
++        total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
++        total_failed: 0,
++        idempotency_key: input.idempotencyKey,
++      },
++    },
++    dbClient,
++  );
++
++  try {
++    const reservation = await dbClient.transaction(async (transaction) => {
++      const startedSnapshot = await markBatchPublicationStarting(
++        {
++          tenantId: input.tenantId,
++          batchId: input.batchId,
++          correlationId: input.correlationId,
++          idempotencyKey: input.idempotencyKey,
++          currentPublicationAttempts: snapshot.publicationAttempts,
++        },
++        transaction,
++      );
++
++      if (!startedSnapshot) {
++        return null;
++      }
++
++      await markBatchPublicationSucceeded(
++        {
++          tenantId: input.tenantId,
++          batchId: input.batchId,
++          actorId: input.actorId,
++          correlationId: input.correlationId,
++          idempotencyKey: input.idempotencyKey,
++        },
++        transaction,
++      );
++
++      return startedSnapshot;
++    });
++
++    if (!reservation) {
++      const currentSnapshot = await loadBatchPublicationSnapshot(
++        { tenantId: input.tenantId, batchId: input.batchId },
++        dbClient,
++      );
++
++      if (currentSnapshot?.publicationStatus === "published" && currentSnapshot.lastPublicationIdempotencyKey === input.idempotencyKey) {
++        return buildPublishedResult(currentSnapshot);
++      }
++
++      throw new BatchPublicationError(
++        "BATCH_PUBLICATION_IN_PROGRESS",
++        "A publicacao deste lote ja esta em andamento.",
++        409,
++        {
++          publication_status: currentSnapshot?.publicationStatus ?? snapshot.publicationStatus,
++          last_publication_idempotency_key:
++            currentSnapshot?.lastPublicationIdempotencyKey ?? snapshot.lastPublicationIdempotencyKey,
++        },
++      );
++    }
++
++    try {
++      await publishDomainEvent(
++        buildDomainEvent({
++          event_name: "rh.batch.published.v1",
++          event_version: "v1",
++          occurred_at: new Date().toISOString(),
++          correlation_id: input.correlationId,
++          tenant_id: input.tenantId,
++          actor: {
++            actor_id: input.actorId,
++            actor_role: "rh_operator",
++          },
++          payload: {
++            batch_id: input.batchId,
++            publication_status: "published",
++            total_requested: snapshot.routingTotalCount,
++            total_published: snapshot.routingMatchedCount,
++            idempotency_key: input.idempotencyKey,
++          },
++        }),
++      );
++    } catch {
++      // Publication state is already durable; event emission is best-effort.
++    }
++
++    await writeBatchPublicationAudit(
++      {
++        tenantId: input.tenantId,
++        actorId: input.actorId,
++        correlationId: input.correlationId,
++        batchId: input.batchId,
++        status: "success",
++        stage: "finished",
++        details: {
++          total_requested: snapshot.routingTotalCount,
++          total_published: snapshot.routingMatchedCount,
++          total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
++          total_failed: 0,
++          idempotency_key: input.idempotencyKey,
++        },
++      },
++      dbClient,
++    );
++  } catch (error) {
++    await markBatchPublicationFailed(
++      {
++        tenantId: input.tenantId,
++        batchId: input.batchId,
++        correlationId: input.correlationId,
++        idempotencyKey: input.idempotencyKey,
++        errorMessage: error instanceof Error ? error.message : "Falha desconhecida na publicacao.",
++      },
++      dbClient,
++    );
++
++    await writeBatchPublicationAudit(
++      {
++        tenantId: input.tenantId,
++        actorId: input.actorId,
++        correlationId: input.correlationId,
++        batchId: input.batchId,
++        status: "failure",
++        stage: "finished",
++        details: {
++          error_message: error instanceof Error ? error.message : "Falha desconhecida na publicacao.",
++          idempotency_key: input.idempotencyKey,
++        },
++      },
++      dbClient,
++    );
++
++    if (error instanceof BatchPublicationError) {
++      throw error;
++    }
++
++    throw new BatchPublicationError(
++      "INTERNAL_SERVER_ERROR",
++      "Falha ao publicar lote.",
++      500,
++      { cause: error instanceof Error ? error.message : "unknown" },
++    );
++  }
++
++  const refreshed = await loadBatchPublicationSnapshot(
++    { tenantId: input.tenantId, batchId: input.batchId },
++    dbClient,
++  );
++
++  if (!refreshed) {
++    throw new BatchPublicationError("NOT_FOUND", "Lote nao encontrado.", 404);
++  }
++
++  return buildPublishedResult(refreshed);
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/modules/batches/infrastructure/batch-repository.ts b/src/modules/batches/infrastructure/batch-repository.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/batches/infrastructure/batch-repository.ts
+
++++ b/src/modules/batches/infrastructure/batch-repository.ts
+@@ -0,0 +1,176 @@
++import { and, eq, inArray } from "drizzle-orm";
++import { db } from "@/lib/db/client";
++import { batches, exceptions } from "@/lib/db/schema";
++
++type DbLike = typeof db;
++
++export type BatchPublicationSnapshot = {
++  id: string;
++  tenantId: string;
++  validationStatus: string;
++  routingStatus: string;
++  routingTotalCount: number;
++  routingMatchedCount: number;
++  routingPendingCount: number;
++  routingFailedCount: number;
++  routingAmbiguousCount: number;
++  routingBlockedReason: string | null;
++  routingProcessedAt: Date | string | null;
++  publicationStatus: string;
++  publicationAttempts: number;
++  publishedAt: Date | string | null;
++  publishedBy: string | null;
++  lastPublicationCorrelationId: string | null;
++  lastPublicationIdempotencyKey: string | null;
++  lastPublicationError: string | null;
++};
++
++export async function loadBatchPublicationSnapshot(
++  input: { tenantId: string; batchId: string },
++  dbClient: DbLike = db,
++): Promise<BatchPublicationSnapshot | null> {
++  const rows = await dbClient
++    .select({
++      id: batches.id,
++      tenantId: batches.tenantId,
++      validationStatus: batches.validationStatus,
++      routingStatus: batches.routingStatus,
++      routingTotalCount: batches.routingTotalCount,
++      routingMatchedCount: batches.routingMatchedCount,
++      routingPendingCount: batches.routingPendingCount,
++      routingFailedCount: batches.routingFailedCount,
++      routingAmbiguousCount: batches.routingAmbiguousCount,
++      routingBlockedReason: batches.routingBlockedReason,
++      routingProcessedAt: batches.routingProcessedAt,
++      publicationStatus: batches.publicationStatus,
++      publicationAttempts: batches.publicationAttempts,
++      publishedAt: batches.publishedAt,
++      publishedBy: batches.publishedBy,
++      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
++      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
++      lastPublicationError: batches.lastPublicationError,
++    })
++    .from(batches)
++    .where(and(eq(batches.id, input.batchId), eq(batches.tenantId, input.tenantId)))
++    .limit(1);
++
++  const row = rows[0];
++  if (!row) {
++    return null;
++  }
++
++  return row.tenantId === input.tenantId ? row : null;
++}
++
++export async function loadBatchPublicationExceptions(
++  input: { tenantId: string; batchId: string },
++  dbClient: DbLike = db,
++): Promise<Array<{ currentState: string }>> {
++  return dbClient
++    .select({ currentState: exceptions.currentState })
++    .from(exceptions)
++    .where(and(eq(exceptions.batchId, input.batchId), eq(exceptions.tenantId, input.tenantId)));
++}
++
++export async function markBatchPublicationStarting(
++  input: {
++    tenantId: string;
++    batchId: string;
++    correlationId: string;
++    idempotencyKey: string;
++    currentPublicationAttempts: number;
++  },
++  dbClient: DbLike = db,
++): Promise<BatchPublicationSnapshot | null> {
++  const now = new Date();
++
++  const rows = await dbClient
++    .update(batches)
++    .set({
++      publicationStatus: "publishing",
++      publicationAttempts: input.currentPublicationAttempts + 1,
++      lastPublicationCorrelationId: input.correlationId,
++      lastPublicationIdempotencyKey: input.idempotencyKey,
++      lastPublicationError: null,
++      updatedAt: now,
++    })
++    .where(
++      and(
++        eq(batches.id, input.batchId),
++        eq(batches.tenantId, input.tenantId),
++        inArray(batches.publicationStatus, ["pending", "failed"]),
++      ),
++    )
++    .returning({
++      id: batches.id,
++      tenantId: batches.tenantId,
++      validationStatus: batches.validationStatus,
++      routingStatus: batches.routingStatus,
++      routingTotalCount: batches.routingTotalCount,
++      routingMatchedCount: batches.routingMatchedCount,
++      routingPendingCount: batches.routingPendingCount,
++      routingFailedCount: batches.routingFailedCount,
++      routingAmbiguousCount: batches.routingAmbiguousCount,
++      routingBlockedReason: batches.routingBlockedReason,
++      routingProcessedAt: batches.routingProcessedAt,
++      publicationStatus: batches.publicationStatus,
++      publicationAttempts: batches.publicationAttempts,
++      publishedAt: batches.publishedAt,
++      publishedBy: batches.publishedBy,
++      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
++      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
++      lastPublicationError: batches.lastPublicationError,
++    });
++
++  return rows[0] ?? null;
++}
++
++export async function markBatchPublicationSucceeded(
++  input: {
++    tenantId: string;
++    batchId: string;
++    actorId: string;
++    correlationId: string;
++    idempotencyKey: string;
++  },
++  dbClient: DbLike = db,
++): Promise<void> {
++  const now = new Date();
++
++  await dbClient
++    .update(batches)
++    .set({
++      publicationStatus: "published",
++      publishedAt: now,
++      publishedBy: input.actorId,
++      lastPublicationCorrelationId: input.correlationId,
++      lastPublicationIdempotencyKey: input.idempotencyKey,
++      lastPublicationError: null,
++      updatedAt: now,
++    })
++    .where(and(eq(batches.id, input.batchId), eq(batches.tenantId, input.tenantId)));
++}
++
++export async function markBatchPublicationFailed(
++  input: {
++    tenantId: string;
++    batchId: string;
++    correlationId: string;
++    idempotencyKey: string;
++    errorMessage: string;
++  },
++  dbClient: DbLike = db,
++): Promise<void> {
++  const now = new Date();
++
++  await dbClient
++    .update(batches)
++    .set({
++      publicationStatus: "failed",
++      lastPublicationCorrelationId: input.correlationId,
++      lastPublicationIdempotencyKey: input.idempotencyKey,
++      lastPublicationError: input.errorMessage,
++      updatedAt: now,
++    })
++    .where(and(eq(batches.id, input.batchId), eq(batches.tenantId, input.tenantId)));
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/modules/exceptions/application/list-exceptions.ts b/src/modules/exceptions/application/list-exceptions.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/exceptions/application/list-exceptions.ts
+
++++ b/src/modules/exceptions/application/list-exceptions.ts
+@@ -0,0 +1,13 @@
++import type { ExceptionPriority, ExceptionState } from "../domain/exception";
++import { listExceptionsForBatch } from "../infrastructure/exception-repository";
++
++export async function listBatchExceptions(input: {
++  tenantId: string;
++  batchId: string;
++  priority?: ExceptionPriority;
++  state?: ExceptionState;
++  skip: number;
++  take: number;
++}) {
++  return listExceptionsForBatch(input);
++}
+\ No newline at end of file
+
+
+
+diff --git a/src/modules/exceptions/application/record-exception-action.ts b/src/modules/exceptions/application/record-exception-action.ts
+new file mode 100644
+--- /dev/null
++++ b/src/modules/exceptions/application/record-exception-action.ts
+
++++ b/src/modules/exceptions/application/record-exception-action.ts
+@@ -0,0 +1,11 @@
++import { recordExceptionAction } from "../infrastructure/exception-repository";
++
++export async function recordCorrectiveExceptionAction(input: {
++  tenantId: string;
++  exceptionId: string;
++  actorId: string;
++  actionDescription: string;
++  expectedResult: "reprocessable" | "reject" | "publish-with-evidence";
++}) {
++  return recordExceptionAction(input);
++}
+\ No newline at end of file
+

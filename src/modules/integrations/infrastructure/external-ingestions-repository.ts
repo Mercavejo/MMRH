@@ -20,6 +20,7 @@ export class ExternalIngestionRepositoryError extends Error {
     public readonly code:
       | "NOT_FOUND"
       | "DUPLICATE_INGESTION"
+      | "MAPPING_CONFLICT"
       | "TENANT_MISMATCH"
       | "INVALID_STATE_TRANSITION"
       | "PROCESSING_FAILURE",
@@ -43,6 +44,10 @@ function mapExternalIngestionRow(row: {
   validationResult: "success" | "failure";
   validationFailureCode: ExternalIngestionFailureCode | null;
   validatedAt: Date;
+  mappingStatus: "mapped" | "ambiguous" | "not-found";
+  mappingVersion: number | null;
+  mappedEmployeeId: string | null;
+  externalIdentifier: string | null;
   payloadSummary: Record<string, unknown> | null;
   receivedAt: Date;
   processingStartedAt: Date | null;
@@ -75,6 +80,12 @@ function mapExternalIngestionRow(row: {
     resolution: {
       failure_code: row.failureCode,
       recommended_action: row.recommendedAction,
+    },
+    mapping: {
+      status: row.mappingStatus,
+      external_identifier: row.externalIdentifier,
+      mapped_employee_id: row.mappedEmployeeId,
+      mapping_version: row.mappingVersion,
     },
     correlation_id: row.correlationId,
     payload_summary: row.payloadSummary ?? {},
@@ -168,12 +179,23 @@ export async function registerExternalIngestionInDb(
       contractVersion: input.contractVersion,
       sourceReference: input.sourceReference,
       idempotencyKey: input.idempotencyKey,
-      status: "received",
       validationResult: "success",
       validationFailureCode: null,
       validatedAt: now,
+      mappingStatus: input.mappingStatus,
+      mappingVersion: input.mappingVersion,
+      mappedEmployeeId: input.mappedEmployeeId,
+      externalIdentifier:
+        input.externalIdentifier ??
+        (typeof input.payloadSummary.external_identifier === "string"
+          ? input.payloadSummary.external_identifier
+          : null),
       payloadSummary: input.payloadSummary,
       receivedAt: now,
+      failureCode: input.failureCode,
+      recommendedAction: input.recommendedAction,
+      failedAt: input.status === "failed" ? now : null,
+      status: input.status,
       correlationId: input.correlationId,
       createdAt: now,
       updatedAt: now,
@@ -189,6 +211,10 @@ export async function registerExternalIngestionInDb(
       validationResult: externalIngestions.validationResult,
       validationFailureCode: externalIngestions.validationFailureCode,
       validatedAt: externalIngestions.validatedAt,
+      mappingStatus: externalIngestions.mappingStatus,
+      mappingVersion: externalIngestions.mappingVersion,
+      mappedEmployeeId: externalIngestions.mappedEmployeeId,
+      externalIdentifier: externalIngestions.externalIdentifier,
       payloadSummary: externalIngestions.payloadSummary,
       receivedAt: externalIngestions.receivedAt,
       processingStartedAt: externalIngestions.processingStartedAt,
@@ -283,6 +309,10 @@ export async function listExternalIngestionsFromDb(
         validationResult: externalIngestions.validationResult,
         validationFailureCode: externalIngestions.validationFailureCode,
         validatedAt: externalIngestions.validatedAt,
+        mappingStatus: externalIngestions.mappingStatus,
+        mappingVersion: externalIngestions.mappingVersion,
+        mappedEmployeeId: externalIngestions.mappedEmployeeId,
+        externalIdentifier: externalIngestions.externalIdentifier,
         payloadSummary: externalIngestions.payloadSummary,
         receivedAt: externalIngestions.receivedAt,
         processingStartedAt: externalIngestions.processingStartedAt,
@@ -368,6 +398,10 @@ export async function listExternalIngestionsFromDb(
       validationResult: externalIngestions.validationResult,
       validationFailureCode: externalIngestions.validationFailureCode,
       validatedAt: externalIngestions.validatedAt,
+      mappingStatus: externalIngestions.mappingStatus,
+      mappingVersion: externalIngestions.mappingVersion,
+      mappedEmployeeId: externalIngestions.mappedEmployeeId,
+      externalIdentifier: externalIngestions.externalIdentifier,
       payloadSummary: externalIngestions.payloadSummary,
       receivedAt: externalIngestions.receivedAt,
       processingStartedAt: externalIngestions.processingStartedAt,

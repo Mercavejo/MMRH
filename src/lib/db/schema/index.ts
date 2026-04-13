@@ -12,4 +12,7 @@ export * from "./batches";
 export * from "./exceptions";
 export * from "./exception-actions";
 export * from "./external-ingestions";
+export * from "./external-identifier-mappings";
+export * from "./external-event-consumers";
+export * from "./external-event-deliveries";
 

@@ -8,6 +8,8 @@ export const EXTERNAL_INGESTION_FAILURE_CODES = [
   "INVALID_CONTRACT_VERSION",
   "TENANT_MISMATCH",
   "DUPLICATE_INGESTION",
+  "MAPPING_NOT_FOUND",
+  "AMBIGUOUS_ASSOCIATION",
   "PROCESSING_FAILURE",
 ] as const;
 
@@ -36,6 +38,13 @@ export type ExternalIngestionRegistrationInput = {
   sourceReference?: string;
   idempotencyKey?: string;
   payloadSummary?: Record<string, unknown>;
+  externalIdentifier?: string | null;
+  mappedEmployeeId?: string;
+  mappingVersion?: number;
+  mappingStatus?: "mapped" | "ambiguous" | "not-found";
+  failureCode?: ExternalIngestionFailureCode | null;
+  recommendedAction?: string | null;
+  status?: ExternalIngestionStatus;
 };
 
 export type NormalizedExternalIngestionRegistration = {
@@ -45,6 +54,31 @@ export type NormalizedExternalIngestionRegistration = {
   sourceReference: string;
   idempotencyKey: string;
   payloadSummary: Record<string, unknown>;
+  externalIdentifier: string | null;
+  mappedEmployeeId: string | null;
+  mappingVersion: number | null;
+  mappingStatus: "mapped" | "ambiguous" | "not-found";
+  failureCode: ExternalIngestionFailureCode | null;
+  recommendedAction: string | null;
+  status: ExternalIngestionStatus;
+};
+
+export type ExternalIdentifierMappingCandidate = {
+  tenant_id: string;
+  source_system: AuthorizedExternalSource;
+  external_identifier: string;
+  employee_id: string;
+  mapping_version: number;
+  is_active: boolean;
+};
+
+export type ExternalIdentifierMappingResolution = {
+  status: "mapped" | "ambiguous" | "not-found";
+  external_identifier: string;
+  mapped_employee_id: string | null;
+  mapping_version: number | null;
+  failure_code: ExternalIngestionFailureCode | null;
+  recommended_action: string | null;
 };
 
 export type ExternalContractValidationResult = {
@@ -82,6 +116,12 @@ export type ExternalIngestion = {
   failed_at: string | null;
   contract_validation: ExternalIngestionContractValidation;
   resolution: ExternalIngestionResolution;
+  mapping: {
+    status: "mapped" | "ambiguous" | "not-found";
+    external_identifier: string | null;
+    mapped_employee_id: string | null;
+    mapping_version: number | null;
+  };
   correlation_id: string;
   payload_summary: Record<string, unknown>;
   timeline: AuditTimelineEntry[];
@@ -138,6 +178,18 @@ function parseText(value: string | undefined, fieldName: string, minLength = 1):
   return normalized;
 }
 
+function parsePositiveInteger(value: number | undefined, fieldName: string): number {
+  if (value === undefined) {
+    throw new Error(`${fieldName} invalido.`);
+  }
+
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} invalido.`);
+  }
+
+  return value;
+}
+
 function normalizeSourceSystem(value: string | undefined): AuthorizedExternalSource {
   const normalized = parseText(value, "source_system");
   if (!AUTHORIZED_EXTERNAL_SOURCES.includes(normalized as AuthorizedExternalSource)) {
@@ -150,6 +202,17 @@ function normalizeSourceSystem(value: string | undefined): AuthorizedExternalSou
 export function normalizeExternalIngestionRegistration(
   input: ExternalIngestionRegistrationInput,
 ): NormalizedExternalIngestionRegistration {
+  const mappedEmployeeId = input.mappedEmployeeId?.trim() ? parseUuid(input.mappedEmployeeId, "mapped_employee_id") : null;
+  const mappingStatus = input.mappingStatus ?? (mappedEmployeeId ? "mapped" : "not-found");
+  const status = input.status ?? (mappingStatus === "mapped" ? "received" : "failed");
+  const failureCode =
+    input.failureCode ??
+    (mappingStatus === "mapped"
+      ? null
+      : mappingStatus === "ambiguous"
+        ? "AMBIGUOUS_ASSOCIATION"
+        : "MAPPING_NOT_FOUND");
+
   return {
     tenantId: parseUuid(input.tenantId, "tenant_id"),
     sourceSystem: normalizeSourceSystem(input.sourceSystem),
@@ -157,6 +220,63 @@ export function normalizeExternalIngestionRegistration(
     sourceReference: parseText(input.sourceReference, "source_reference", 3),
     idempotencyKey: parseText(input.idempotencyKey, "idempotency_key", 8),
     payloadSummary: input.payloadSummary ?? {},
+    externalIdentifier: input.externalIdentifier?.trim() ? parseText(input.externalIdentifier, "external_identifier") : null,
+    mappedEmployeeId,
+    mappingVersion: input.mappingVersion === undefined ? null : parsePositiveInteger(input.mappingVersion, "mapping_version"),
+    mappingStatus,
+    failureCode,
+    recommendedAction: input.recommendedAction?.trim() || null,
+    status,
+  };
+}
+
+export function resolveExternalIdentifierMapping(input: {
+  tenantId: string;
+  sourceSystem: AuthorizedExternalSource;
+  externalIdentifier: string;
+  candidates: ExternalIdentifierMappingCandidate[];
+}): ExternalIdentifierMappingResolution {
+  const externalIdentifier = input.externalIdentifier.trim();
+  const scopedCandidates = input.candidates.filter(
+    (candidate) =>
+      candidate.is_active &&
+      candidate.tenant_id === input.tenantId &&
+      candidate.source_system === input.sourceSystem &&
+      candidate.external_identifier === externalIdentifier,
+  );
+
+  if (scopedCandidates.length === 1) {
+    const candidate = scopedCandidates[0];
+    return {
+      status: "mapped",
+      external_identifier: externalIdentifier,
+      mapped_employee_id: candidate.employee_id,
+      mapping_version: candidate.mapping_version,
+      failure_code: null,
+      recommended_action: null,
+    };
+  }
+
+  if (scopedCandidates.length > 1) {
+    const classification = classifyExternalIngestionFailure("AMBIGUOUS_ASSOCIATION");
+    return {
+      status: "ambiguous",
+      external_identifier: externalIdentifier,
+      mapped_employee_id: null,
+      mapping_version: null,
+      failure_code: "AMBIGUOUS_ASSOCIATION",
+      recommended_action: classification.recommended_action,
+    };
+  }
+
+  const classification = classifyExternalIngestionFailure("MAPPING_NOT_FOUND");
+  return {
+    status: "not-found",
+    external_identifier: externalIdentifier,
+    mapped_employee_id: null,
+    mapping_version: null,
+    failure_code: "MAPPING_NOT_FOUND",
+    recommended_action: classification.recommended_action,
   };
 }
 
@@ -275,6 +395,20 @@ export function classifyExternalIngestionFailure(code: ExternalIngestionFailureC
   if (code === "DUPLICATE_INGESTION") {
     return {
       recommended_action: "Use a mesma chave de idempotencia para reenvio controlado ou abra nova referencia.",
+      status: "failed",
+    };
+  }
+
+  if (code === "MAPPING_NOT_FOUND") {
+    return {
+      recommended_action: "Cadastre o mapeamento do identificador externo para o tenant antes de reenviar.",
+      status: "failed",
+    };
+  }
+
+  if (code === "AMBIGUOUS_ASSOCIATION") {
+    return {
+      recommended_action: "Resolva a associacao ambigua na fila de excecao e reprocese o item.",
       status: "failed",
     };
   }

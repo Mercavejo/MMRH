@@ -1,0 +1,1945 @@
+﻿===== DIFF: src/modules/support/domain/support-case.ts (untracked) =====
+diff --git a/src/modules/support/domain/support-case.ts b/src/modules/support/domain/support-case.ts
+new file mode 100644
+index 0000000..0272ad3
+--- /dev/null
++++ b/src/modules/support/domain/support-case.ts
+@@ -0,0 +1,153 @@
++import { buildAuditTimeline, type AuditEventRecord, type AuditTimelineEntry } from "@/modules/audit/domain/audit-event-filters";
++
++export const SUPPORT_CASE_STATUSES = ["open", "in_treatment", "resolved"] as const;
++export const SUPPORT_CASE_SEVERITIES = ["critical", "warning", "info"] as const;
++export const SUPPORT_RESULT_STATUSES = ["resolved", "partial", "failed"] as const;
++
++export type SupportCaseStatus = (typeof SUPPORT_CASE_STATUSES)[number];
++export type SupportCaseSeverity = (typeof SUPPORT_CASE_SEVERITIES)[number];
++export type SupportResultStatus = (typeof SUPPORT_RESULT_STATUSES)[number];
++
++export type SupportCaseFilterInput = {
++  from?: string;
++  to?: string;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++};
++
++export type NormalizedSupportCaseFilters = {
++  from?: Date;
++  to?: Date;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++};
++
++export type SupportCaseResolution = {
++  cause_code: string;
++  action_applied: string;
++  result_status: SupportResultStatus;
++  resolved_by: string;
++  resolved_at: string;
++};
++
++export type SupportCase = {
++  case_id: string;
++  tenant_id: string;
++  status: SupportCaseStatus;
++  severity: SupportCaseSeverity;
++  links: {
++    batch_id: string | null;
++    document_id: string | null;
++    user_id: string | null;
++  };
++  technical_history: AuditEventRecord[];
++  timeline: AuditTimelineEntry[];
++  functional_history: Array<{
++    source: "alerts" | "exceptions";
++    status: string;
++    message: string;
++    occurred_at: string;
++  }>;
++  resolution: SupportCaseResolution | null;
++};
++
++function parseUuid(value: string | undefined, field: string): string | undefined {
++  if (!value?.trim()) {
++    return undefined;
++  }
++
++  const normalized = value.trim();
++  const uuidPattern =
++    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++
++  if (!uuidPattern.test(normalized)) {
++    throw new Error(`${field} invalido.`);
++  }
++
++  return normalized;
++}
++
++function parseDate(value: string | undefined, field: string): Date | undefined {
++  if (!value?.trim()) {
++    return undefined;
++  }
++
++  const parsed = new Date(value);
++  if (Number.isNaN(parsed.getTime())) {
++    throw new Error(`${field} invalido.`);
++  }
++
++  return parsed;
++}
++
++export function normalizeSupportCaseFilters(input: SupportCaseFilterInput): NormalizedSupportCaseFilters {
++  const from = parseDate(input.from, "from");
++  const to = parseDate(input.to, "to");
++
++  if (from && to && from.getTime() > to.getTime()) {
++    throw new Error("Periodo invalido.");
++  }
++
++  return {
++    from,
++    to,
++    batchId: parseUuid(input.batchId, "batch_id"),
++    documentId: parseUuid(input.documentId, "document_id"),
++    userId: parseUuid(input.userId, "user_id"),
++  };
++}
++
++export function isValidSupportCaseStatusTransition(previous: SupportCaseStatus, next: SupportCaseStatus): boolean {
++  if (previous === "open") {
++    return next === "in_treatment";
++  }
++
++  if (previous === "in_treatment") {
++    return next === "resolved";
++  }
++
++  return false;
++}
++
++export function deriveSupportCaseStatus(events: Array<Pick<AuditEventRecord, "action">>): SupportCaseStatus {
++  const hasResolved = events.some((event) => event.action === "support.case.resolved.v1");
++  if (hasResolved) {
++    return "resolved";
++  }
++
++  const hasRecovery = events.some((event) => event.action === "support.case.recovery.triggered.v1");
++  if (hasRecovery) {
++    return "in_treatment";
++  }
++
++  return "open";
++}
++
++export function deriveSupportCaseSeverity(events: AuditEventRecord[]): SupportCaseSeverity {
++  const severities = events
++    .map((event) => {
++      const value = event.details && typeof event.details.severity === "string" ? event.details.severity : null;
++      if (value === "critical" || value === "warning" || value === "info") {
++        return value;
++      }
++
++      return null;
++    })
++    .filter((value): value is SupportCaseSeverity => Boolean(value));
++
++  if (severities.includes("critical")) {
++    return "critical";
++  }
++
++  if (severities.includes("warning")) {
++    return "warning";
++  }
++
++  return "info";
++}
++
++export function buildSupportTimeline(events: AuditEventRecord[]): AuditTimelineEntry[] {
++  return buildAuditTimeline(events);
++}
+===== DIFF: src/modules/support/infrastructure/support-cases-repository.ts (untracked) =====
+diff --git a/src/modules/support/infrastructure/support-cases-repository.ts b/src/modules/support/infrastructure/support-cases-repository.ts
+new file mode 100644
+index 0000000..5756ac3
+--- /dev/null
++++ b/src/modules/support/infrastructure/support-cases-repository.ts
+@@ -0,0 +1,339 @@
++import { and, desc, eq, gte, lte } from "drizzle-orm";
++import { db } from "@/lib/db/client";
++import { auditLogs, batches, exceptions } from "@/lib/db/schema";
++import { reprocessBatchExceptions } from "@/modules/exceptions/infrastructure/exception-repository";
++import type { AuditEventRecord } from "@/modules/audit/domain/audit-event-filters";
++import {
++  buildSupportTimeline,
++  deriveSupportCaseSeverity,
++  deriveSupportCaseStatus,
++  isValidSupportCaseStatusTransition,
++  type NormalizedSupportCaseFilters,
++  type SupportCase,
++  type SupportCaseResolution,
++  type SupportResultStatus,
++} from "../domain/support-case";
++
++type DbLike = typeof db;
++
++export class SupportCaseRepositoryError extends Error {
++  constructor(
++    public readonly code: "NOT_FOUND" | "INVALID_STATE_TRANSITION" | "BATCH_MISMATCH" | "INVALID_IDEMPOTENCY_REPLAY",
++    message: string,
++    public readonly details?: Record<string, unknown>,
++  ) {
++    super(message);
++    this.name = "SupportCaseRepositoryError";
++  }
++}
++
++function mapAuditRecord(row: {
++  id: string;
++  action: string;
++  status: "success" | "failure";
++  resourceType: string;
++  resourceId: string;
++  actorId: string | null;
++  correlationId: string;
++  createdAt: Date;
++  details: Record<string, unknown> | null;
++}): AuditEventRecord {
++  return {
++    id: row.id,
++    action: row.action,
++    status: row.status,
++    resource_type: row.resourceType,
++    resource_id: row.resourceId,
++    actor_id: row.actorId,
++    correlation_id: row.correlationId,
++    created_at: row.createdAt.toISOString(),
++    details: row.details,
++  };
++}
++
++function readStringField(details: Record<string, unknown> | null, field: string): string | null {
++  if (!details) {
++    return null;
++  }
++
++  const value = details[field];
++  return typeof value === "string" && value.trim().length > 0 ? value : null;
++}
++
++function extractResolution(events: AuditEventRecord[]): SupportCaseResolution | null {
++  const resolvedEvent = events.find((event) => event.action === "support.case.resolved.v1");
++  if (!resolvedEvent || !resolvedEvent.details) {
++    return null;
++  }
++
++  const causeCode = readStringField(resolvedEvent.details, "cause_code");
++  const actionApplied = readStringField(resolvedEvent.details, "action_applied");
++  const resultStatus = readStringField(resolvedEvent.details, "result_status");
++
++  if (!causeCode || !actionApplied || !resultStatus) {
++    return null;
++  }
++
++  if (resultStatus !== "resolved" && resultStatus !== "partial" && resultStatus !== "failed") {
++    return null;
++  }
++
++  return {
++    cause_code: causeCode,
++    action_applied: actionApplied,
++    result_status: resultStatus,
++    resolved_by: resolvedEvent.actor_id ?? "system",
++    resolved_at: resolvedEvent.created_at,
++  };
++}
++
++export async function getSupportCaseFromDb(
++  input: { tenantId: string; caseId: string; filters: NormalizedSupportCaseFilters },
++  dbClient: DbLike = db,
++): Promise<SupportCase | null> {
++  const conditions = [eq(auditLogs.tenantId, input.tenantId), eq(auditLogs.correlationId, input.caseId)];
++
++  if (input.filters.from) {
++    conditions.push(gte(auditLogs.createdAt, input.filters.from));
++  }
++
++  if (input.filters.to) {
++    conditions.push(lte(auditLogs.createdAt, input.filters.to));
++  }
++
++  if (input.filters.userId) {
++    conditions.push(eq(auditLogs.actorId, input.filters.userId));
++  }
++
++  const rows = await dbClient
++    .select({
++      id: auditLogs.id,
++      action: auditLogs.action,
++      status: auditLogs.status,
++      resourceType: auditLogs.resourceType,
++      resourceId: auditLogs.resourceId,
++      actorId: auditLogs.actorId,
++      correlationId: auditLogs.correlationId,
++      createdAt: auditLogs.createdAt,
++      details: auditLogs.details,
++    })
++    .from(auditLogs)
++    .where(and(...conditions))
++    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
++    .limit(200);
++
++  if (!rows.length) {
++    return null;
++  }
++
++  const events = rows.map(mapAuditRecord);
++  const batchLink =
++    events.find((event) => event.resource_type === "batch")?.resource_id ??
++    (readStringField(events[0]?.details ?? null, "batch_id") ?? null);
++  const documentLink =
++    events.find((event) => event.resource_type === "document")?.resource_id ??
++    (readStringField(events[0]?.details ?? null, "document_id") ?? null);
++  const userLink =
++    events.find((event) => event.actor_id)?.actor_id ??
++    (readStringField(events[0]?.details ?? null, "user_id") ?? null);
++
++  if (input.filters.batchId && (!batchLink || input.filters.batchId !== batchLink)) {
++    return null;
++  }
++
++  if (input.filters.documentId && (!documentLink || input.filters.documentId !== documentLink)) {
++    return null;
++  }
++
++  const functionalHistory: SupportCase["functional_history"] = [];
++
++  if (batchLink) {
++    const exceptionRows = await dbClient
++      .select({
++        id: exceptions.id,
++        currentState: exceptions.currentState,
++        errorCategory: exceptions.errorCategory,
++        updatedAt: exceptions.updatedAt,
++      })
++      .from(exceptions)
++      .innerJoin(batches, eq(exceptions.batchId, batches.id))
++      .where(and(eq(exceptions.tenantId, input.tenantId), eq(batches.correlationId, input.caseId)))
++      .orderBy(desc(exceptions.updatedAt))
++      .limit(20);
++
++    for (const exceptionRow of exceptionRows) {
++      functionalHistory.push({
++        source: "exceptions",
++        status: exceptionRow.currentState,
++        message: `Excecao ${exceptionRow.errorCategory}`,
++        occurred_at: exceptionRow.updatedAt.toISOString(),
++      });
++    }
++  }
++
++  for (const event of events.filter((item) => item.action.startsWith("rh.alerts") || item.action.startsWith("support.case"))) {
++    functionalHistory.push({
++      source: "alerts",
++      status: event.status,
++      message: event.action,
++      occurred_at: event.created_at,
++    });
++  }
++
++  return {
++    case_id: input.caseId,
++    tenant_id: input.tenantId,
++    status: deriveSupportCaseStatus(events),
++    severity: deriveSupportCaseSeverity(events),
++    links: {
++      batch_id: batchLink,
++      document_id: documentLink,
++      user_id: userLink,
++    },
++    technical_history: events,
++    timeline: buildSupportTimeline(events),
++    functional_history: functionalHistory,
++    resolution: extractResolution(events),
++  };
++}
++
++export async function resolveSupportCaseInDb(input: {
++  tenantId: string;
++  caseId: string;
++  actorId: string;
++  correlationId: string;
++  causeCode: string;
++  actionApplied: string;
++  resultStatus: SupportResultStatus;
++  recovery?: {
++    batchId: string;
++    exceptionIds?: string[];
++    idempotencyKey: string;
++  };
++}) {
++  const correlatedRows = await db
++    .select({ correlationId: auditLogs.correlationId })
++    .from(auditLogs)
++    .where(
++      and(
++        eq(auditLogs.tenantId, input.tenantId),
++        eq(auditLogs.resourceType, "support_case"),
++        eq(auditLogs.resourceId, input.caseId),
++        eq(auditLogs.action, "support.case.resolved.v1"),
++      ),
++    )
++    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
++    .limit(1);
++
++  const previousResolutionCorrelationId = correlatedRows[0]?.correlationId;
++  if (previousResolutionCorrelationId && previousResolutionCorrelationId !== input.correlationId) {
++    throw new SupportCaseRepositoryError(
++      "INVALID_IDEMPOTENCY_REPLAY",
++      "Resolucao ja registrada com outra correlation id.",
++      {
++        case_id: input.caseId,
++      },
++    );
++  }
++
++  if (previousResolutionCorrelationId && previousResolutionCorrelationId === input.correlationId) {
++    return {
++      case_id: input.caseId,
++      previous_status: "resolved" as const,
++      status: "resolved" as const,
++      resolved_at: new Date().toISOString(),
++    };
++  }
++
++  const supportCase = await getSupportCaseFromDb({
++    tenantId: input.tenantId,
++    caseId: input.caseId,
++    filters: {},
++  });
++
++  if (!supportCase) {
++    throw new SupportCaseRepositoryError("NOT_FOUND", "Caso de suporte nao encontrado.");
++  }
++
++  if (!isValidSupportCaseStatusTransition(supportCase.status, "resolved")) {
++    throw new SupportCaseRepositoryError(
++      "INVALID_STATE_TRANSITION",
++      "Transicao de estado de caso invalida.",
++      {
++        current_status: supportCase.status,
++      },
++    );
++  }
++
++  let recoveryResult: Record<string, unknown> | null = null;
++
++  if (input.recovery) {
++    if (!supportCase.links.batch_id || supportCase.links.batch_id !== input.recovery.batchId) {
++      throw new SupportCaseRepositoryError(
++        "BATCH_MISMATCH",
++        "Batch de recuperacao nao corresponde ao caso.",
++        {
++          case_batch_id: supportCase.links.batch_id,
++          requested_batch_id: input.recovery.batchId,
++        },
++      );
++    }
++
++    const result = await reprocessBatchExceptions({
++      tenantId: input.tenantId,
++      batchId: input.recovery.batchId,
++      actorId: input.actorId,
++      correlationId: input.correlationId,
++      idempotencyKey: input.recovery.idempotencyKey,
++      exceptionIds: input.recovery.exceptionIds,
++    });
++
++    recoveryResult = {
++      batch_id: result.batch_id,
++      total_requested: result.total_requested,
++      total_reprocessed: result.total_reprocessed,
++      total_resolved: result.total_resolved,
++      total_failed: result.total_failed,
++    };
++
++    await db.insert(auditLogs).values({
++      tenantId: input.tenantId,
++      actorId: input.actorId,
++      correlationId: input.correlationId,
++      action: "support.case.recovery.triggered.v1",
++      resourceType: "support_case",
++      resourceId: input.caseId,
++      status: "success",
++      details: {
++        case_id: input.caseId,
++        batch_id: input.recovery.batchId,
++        idempotency_key: input.recovery.idempotencyKey,
++        recovery_result: recoveryResult,
++      },
++    });
++  }
++
++  await db.insert(auditLogs).values({
++    tenantId: input.tenantId,
++    actorId: input.actorId,
++    correlationId: input.correlationId,
++    action: "support.case.resolved.v1",
++    resourceType: "support_case",
++    resourceId: input.caseId,
++    status: "success",
++    details: {
++      case_id: input.caseId,
++      cause_code: input.causeCode,
++      action_applied: input.actionApplied,
++      result_status: input.resultStatus,
++      recovery_result: recoveryResult,
++    },
++  });
++
++  return {
++    case_id: input.caseId,
++    previous_status: supportCase.status,
++    status: "resolved" as const,
++    resolved_at: new Date().toISOString(),
++  };
++}
+===== DIFF: src/modules/support/application/get-support-case.ts (untracked) =====
+diff --git a/src/modules/support/application/get-support-case.ts b/src/modules/support/application/get-support-case.ts
+new file mode 100644
+index 0000000..c2f7727
+--- /dev/null
++++ b/src/modules/support/application/get-support-case.ts
+@@ -0,0 +1,53 @@
++import {
++  normalizeSupportCaseFilters,
++  type SupportCaseFilterInput,
++} from "../domain/support-case";
++import { getSupportCaseFromDb } from "../infrastructure/support-cases-repository";
++
++export class SupportCaseError extends Error {
++  constructor(
++    public readonly code: string,
++    message: string,
++    public readonly statusCode: number,
++    public readonly details?: Record<string, unknown>,
++  ) {
++    super(message);
++    this.name = "SupportCaseError";
++  }
++}
++
++export async function getSupportCase(input: {
++  tenantId: string;
++  caseId: string;
++  from?: string;
++  to?: string;
++  batchId?: string;
++  documentId?: string;
++  userId?: string;
++}) {
++  let filters: ReturnType<typeof normalizeSupportCaseFilters>;
++
++  try {
++    filters = normalizeSupportCaseFilters({
++      from: input.from,
++      to: input.to,
++      batchId: input.batchId,
++      documentId: input.documentId,
++      userId: input.userId,
++    } satisfies SupportCaseFilterInput);
++  } catch (error) {
++    throw new SupportCaseError("VALIDATION_ERROR", (error as Error).message, 400);
++  }
++
++  const supportCase = await getSupportCaseFromDb({
++    tenantId: input.tenantId,
++    caseId: input.caseId,
++    filters,
++  });
++
++  if (!supportCase) {
++    throw new SupportCaseError("NOT_FOUND", "Caso de suporte nao encontrado.", 404);
++  }
++
++  return supportCase;
++}
+===== DIFF: src/modules/support/application/resolve-support-case.ts (untracked) =====
+diff --git a/src/modules/support/application/resolve-support-case.ts b/src/modules/support/application/resolve-support-case.ts
+new file mode 100644
+index 0000000..17c78ec
+--- /dev/null
++++ b/src/modules/support/application/resolve-support-case.ts
+@@ -0,0 +1,55 @@
++import { resolveSupportCaseInDb, SupportCaseRepositoryError } from "../infrastructure/support-cases-repository";
++import { SupportCaseError } from "./get-support-case";
++
++export async function resolveSupportCase(input: {
++  tenantId: string;
++  actorId: string;
++  caseId: string;
++  correlationId: string;
++  causeCode: string;
++  actionApplied: string;
++  resultStatus: "resolved" | "partial" | "failed";
++  recovery?: {
++    batchId: string;
++    exceptionIds?: string[];
++    idempotencyKey: string;
++  };
++}) {
++  try {
++    return await resolveSupportCaseInDb({
++      tenantId: input.tenantId,
++      actorId: input.actorId,
++      caseId: input.caseId,
++      correlationId: input.correlationId,
++      causeCode: input.causeCode,
++      actionApplied: input.actionApplied,
++      resultStatus: input.resultStatus,
++      recovery: input.recovery,
++    });
++  } catch (error) {
++    if (error instanceof SupportCaseRepositoryError) {
++      if (error.code === "NOT_FOUND") {
++        throw new SupportCaseError("NOT_FOUND", "Caso de suporte nao encontrado.", 404, error.details);
++      }
++
++      if (error.code === "INVALID_STATE_TRANSITION") {
++        throw new SupportCaseError(
++          "INVALID_STATE_TRANSITION",
++          "Transicao de estado de caso invalida.",
++          409,
++          error.details,
++        );
++      }
++
++      if (error.code === "BATCH_MISMATCH") {
++        throw new SupportCaseError("FORBIDDEN", "Batch de recuperacao nao corresponde ao caso.", 403, error.details);
++      }
++
++      if (error.code === "INVALID_IDEMPOTENCY_REPLAY") {
++        throw new SupportCaseError("CONFLICT", error.message, 409, error.details);
++      }
++    }
++
++    throw new SupportCaseError("INTERNAL_SERVER_ERROR", "Falha ao resolver caso de suporte.", 500);
++  }
++}
+===== DIFF: src/app/api/v1/support/cases/[caseId]/route.ts (untracked) =====
+diff --git a/src/app/api/v1/support/cases/[caseId]/route.ts b/src/app/api/v1/support/cases/[caseId]/route.ts
+new file mode 100644
+index 0000000..d15422f
+--- /dev/null
++++ b/src/app/api/v1/support/cases/[caseId]/route.ts
+@@ -0,0 +1,186 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { auditLogs, userTenantMappings } from "@/lib/db/schema";
++import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
++import { getSupportCase, SupportCaseError } from "@/modules/support/application/get-support-case";
++
++const paramsSchema = z.object({ caseId: z.string().uuid() });
++
++const querySchema = z
++  .object({
++    from: z.string().datetime().optional(),
++    to: z.string().datetime().optional(),
++    batch_id: z.string().uuid().optional(),
++    document_id: z.string().uuid().optional(),
++    user_id: z.string().uuid().optional(),
++  })
++  .superRefine((value, context) => {
++    if (value.from && value.to && new Date(value.from).getTime() > new Date(value.to).getTime()) {
++      context.addIssue({
++        code: z.ZodIssueCode.custom,
++        path: ["from"],
++        message: "Periodo invalido.",
++      });
++    }
++  });
++
++function withCorrelationHeader(response: NextResponse, correlationId: string) {
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++function jsonResponse<T>(
++  body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
++  correlationId: string,
++  init?: ResponseInit,
++) {
++  return withCorrelationHeader(NextResponse.json(body, init), correlationId);
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++async function writeCaseOpenedAudit(params: {
++  tenantId: string;
++  actorId: string;
++  correlationId: string;
++  caseId: string;
++}) {
++  await db.insert(auditLogs).values({
++    tenantId: params.tenantId,
++    actorId: params.actorId,
++    correlationId: params.correlationId,
++    action: "support.case.opened.v1",
++    resourceType: "support_case",
++    resourceId: params.caseId,
++    status: "success",
++    details: { case_id: params.caseId },
++  });
++}
++
++export async function GET(
++  request: NextRequest,
++  context: { params: Promise<{ caseId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const parsedParams = paramsSchema.safeParse(await context.params);
++  if (!parsedParams.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "caseId invalido.", correlationId, {
++        issues: parsedParams.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const parsedQuery = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
++  if (!parsedQuery.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Parametros de consulta invalidos.", correlationId, {
++        issues: parsedQuery.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
++      status: 401,
++    });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++  } catch (error) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
++        cause: (error as Error).message,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const allowedRoles: RbacRole[] = ["suporte", "rh_gestor", "admin_plataforma"];
++  if (!allowedRoles.includes(role)) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Perfil sem permissao para consultar caso de suporte.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    const supportCase = await getSupportCase({
++      tenantId: session.tenantId,
++      caseId: parsedParams.data.caseId,
++      from: parsedQuery.data.from,
++      to: parsedQuery.data.to,
++      batchId: parsedQuery.data.batch_id,
++      documentId: parsedQuery.data.document_id,
++      userId: parsedQuery.data.user_id,
++    });
++
++    await writeCaseOpenedAudit({
++      tenantId: session.tenantId,
++      actorId: session.userId,
++      correlationId,
++      caseId: parsedParams.data.caseId,
++    });
++
++    return jsonResponse(successResponse(supportCase, correlationId, session.tenantId), correlationId);
++  } catch (error) {
++    if (error instanceof SupportCaseError) {
++      return jsonResponse(
++        errorResponse(error.code, error.message, correlationId, error.details),
++        correlationId,
++        { status: error.statusCode },
++      );
++    }
++
++    return jsonResponse(
++      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao consultar caso de suporte.", correlationId),
++      correlationId,
++      { status: 500 },
++    );
++  }
++}
+===== DIFF: src/app/api/v1/support/cases/[caseId]/resolve/route.ts (untracked) =====
+diff --git a/src/app/api/v1/support/cases/[caseId]/resolve/route.ts b/src/app/api/v1/support/cases/[caseId]/resolve/route.ts
+new file mode 100644
+index 0000000..400d375
+--- /dev/null
++++ b/src/app/api/v1/support/cases/[caseId]/resolve/route.ts
+@@ -0,0 +1,184 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
++import { SupportCaseError } from "@/modules/support/application/get-support-case";
++import { resolveSupportCase } from "@/modules/support/application/resolve-support-case";
++
++const paramsSchema = z.object({ caseId: z.string().uuid() });
++
++const payloadSchema = z.object({
++  cause_code: z.string().trim().min(1),
++  action_applied: z.string().trim().min(1),
++  result_status: z.enum(["resolved", "partial", "failed"]),
++  recovery: z
++    .object({
++      batch_id: z.string().uuid(),
++      exception_ids: z.array(z.string().uuid()).optional(),
++      idempotency_key: z.string().trim().min(1),
++    })
++    .optional(),
++});
++
++function withCorrelationHeader(response: NextResponse, correlationId: string) {
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++function jsonResponse<T>(
++  body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
++  correlationId: string,
++  init?: ResponseInit,
++) {
++  return withCorrelationHeader(NextResponse.json(body, init), correlationId);
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++export async function POST(
++  request: NextRequest,
++  context: { params: Promise<{ caseId: string }> },
++) {
++  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
++  const parsedParams = paramsSchema.safeParse(await context.params);
++  if (!parsedParams.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "caseId invalido.", correlationId, {
++        issues: parsedParams.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const contentType = request.headers.get("content-type") ?? "";
++  let rawBody: Record<string, unknown> = {};
++
++  if (contentType.includes("application/json")) {
++    rawBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
++  } else if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
++    const formData = await request.formData();
++    rawBody = {
++      cause_code: formData.get("cause_code")?.toString(),
++      action_applied: formData.get("action_applied")?.toString(),
++      result_status: formData.get("result_status")?.toString(),
++      recovery: formData.get("recovery_batch_id")
++        ? {
++            batch_id: formData.get("recovery_batch_id")?.toString(),
++            idempotency_key: formData.get("recovery_idempotency_key")?.toString(),
++          }
++        : undefined,
++    };
++  }
++
++  const parsedBody = payloadSchema.safeParse(rawBody);
++  if (!parsedBody.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Payload invalido.", correlationId, {
++        issues: parsedBody.error.issues,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
++  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
++      status: 401,
++    });
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return jsonResponse(
++      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
++      correlationId,
++      { status: 401 },
++    );
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.supportDiagnose,
++    });
++  } catch (error) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
++        cause: (error as Error).message,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const allowedRoles: RbacRole[] = ["suporte", "admin_plataforma"];
++  if (!allowedRoles.includes(role)) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Perfil sem permissao para resolver caso de suporte.", correlationId),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  try {
++    const resolved = await resolveSupportCase({
++      tenantId: session.tenantId,
++      actorId: session.userId,
++      caseId: parsedParams.data.caseId,
++      correlationId,
++      causeCode: parsedBody.data.cause_code,
++      actionApplied: parsedBody.data.action_applied,
++      resultStatus: parsedBody.data.result_status,
++      recovery: parsedBody.data.recovery
++        ? {
++            batchId: parsedBody.data.recovery.batch_id,
++            exceptionIds: parsedBody.data.recovery.exception_ids,
++            idempotencyKey: parsedBody.data.recovery.idempotency_key,
++          }
++        : undefined,
++    });
++
++    return jsonResponse(successResponse(resolved, correlationId, session.tenantId), correlationId);
++  } catch (error) {
++    if (error instanceof SupportCaseError) {
++      return jsonResponse(
++        errorResponse(error.code, error.message, correlationId, error.details),
++        correlationId,
++        { status: error.statusCode },
++      );
++    }
++
++    return jsonResponse(
++      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao resolver caso de suporte.", correlationId),
++      correlationId,
++      { status: 500 },
++    );
++  }
++}
+===== DIFF: src/components/support/support-case-panel.tsx (untracked) =====
+diff --git a/src/components/support/support-case-panel.tsx b/src/components/support/support-case-panel.tsx
+new file mode 100644
+index 0000000..0263d00
+--- /dev/null
++++ b/src/components/support/support-case-panel.tsx
+@@ -0,0 +1,111 @@
++import { Alert, Chip, Paper, Stack, Typography } from "@mui/material";
++import { StatusTimeline } from "@/components/audit/status-timeline";
++import { tokens } from "@/lib/theme/tokens";
++import type { SupportCase } from "@/modules/support/domain/support-case";
++
++function statusLabel(status: SupportCase["status"]): string {
++  if (status === "open") {
++    return "Aberto";
++  }
++
++  if (status === "in_treatment") {
++    return "Em tratamento";
++  }
++
++  return "Resolvido";
++}
++
++export function SupportCasePanel(props: {
++  supportCase: SupportCase | null;
++  errorMessage?: string | null;
++}) {
++  if (props.errorMessage) {
++    return <Alert severity="error">{props.errorMessage}</Alert>;
++  }
++
++  if (!props.supportCase) {
++    return <Alert severity="info">Nenhum caso de suporte selecionado.</Alert>;
++  }
++
++  const { supportCase } = props;
++
++  return (
++    <Stack spacing={2} component="section" aria-label="Caso de suporte consolidado">
++      <Paper elevation={0} sx={{ p: 2, border: `1px solid ${tokens.colors.surface.border}` }}>
++        <Stack spacing={1}>
++          <Typography variant="h6" component="h2">
++            Caso de suporte
++          </Typography>
++          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
++            <Chip label={`Case: ${supportCase.case_id}`} variant="outlined" />
++            <Chip label={`Status: ${statusLabel(supportCase.status)}`} variant="outlined" />
++            <Chip label={`Severidade: ${supportCase.severity}`} variant="outlined" />
++          </Stack>
++          <Typography variant="body2" color="text.secondary">
++            Vinculos: lote {supportCase.links.batch_id ?? "-"} ┬À documento {supportCase.links.document_id ?? "-"} ┬À usuario {supportCase.links.user_id ?? "-"}
++          </Typography>
++        </Stack>
++      </Paper>
++
++      <Paper elevation={0} sx={{ p: 2, border: `1px solid ${tokens.colors.surface.border}` }}>
++        <Typography variant="subtitle1" component="h3" gutterBottom>
++          Historico funcional
++        </Typography>
++        {supportCase.functional_history.length === 0 ? (
++          <Typography variant="body2">Sem eventos funcionais para o caso.</Typography>
++        ) : (
++          <ul>
++            {supportCase.functional_history.map((item, index) => (
++              <li key={`${item.source}-${item.occurred_at}-${index}`}>
++                <strong>{item.source}</strong> ┬À {item.status} ┬À {item.message}
++              </li>
++            ))}
++          </ul>
++        )}
++      </Paper>
++
++      <StatusTimeline items={supportCase.timeline} />
++
++      <Paper elevation={0} sx={{ p: 2, border: `1px solid ${tokens.colors.surface.border}` }}>
++        <Typography variant="subtitle1" component="h3" gutterBottom>
++          Formulario de resolucao
++        </Typography>
++        <form method="post" action={`/api/v1/support/cases/${supportCase.case_id}/resolve`}>
++          <Stack spacing={2}>
++            <label>
++              cause_code
++              <input name="cause_code" type="text" required />
++            </label>
++            <label>
++              action_applied
++              <input name="action_applied" type="text" required />
++            </label>
++            <label>
++              result_status
++              <select name="result_status" defaultValue="resolved">
++                <option value="resolved">resolved</option>
++                <option value="partial">partial</option>
++                <option value="failed">failed</option>
++              </select>
++            </label>
++            <button type="submit">Registrar resolucao</button>
++          </Stack>
++        </form>
++      </Paper>
++
++      {supportCase.resolution ? (
++        <Paper elevation={0} sx={{ p: 2, border: `1px solid ${tokens.colors.surface.border}` }}>
++          <Typography variant="subtitle1" component="h3" gutterBottom>
++            Evidencia de resolucao
++          </Typography>
++          <Typography variant="body2">Causa: {supportCase.resolution.cause_code}</Typography>
++          <Typography variant="body2">Acao: {supportCase.resolution.action_applied}</Typography>
++          <Typography variant="body2">Resultado: {supportCase.resolution.result_status}</Typography>
++          <Typography variant="caption" color="text.secondary">
++            Resolvido por {supportCase.resolution.resolved_by} em {new Date(supportCase.resolution.resolved_at).toLocaleString("pt-BR")}
++          </Typography>
++        </Paper>
++      ) : null}
++    </Stack>
++  );
++}
+===== DIFF: src/app/(rh)/auditoria/page.tsx (untracked) =====
+diff --git a/src/app/(rh)/auditoria/page.tsx b/src/app/(rh)/auditoria/page.tsx
+new file mode 100644
+index 0000000..69e7269
+--- /dev/null
++++ b/src/app/(rh)/auditoria/page.tsx
+@@ -0,0 +1,306 @@
++import { and, eq } from "drizzle-orm";
++import { cookies } from "next/headers";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
++import { validateSession } from "@/lib/auth/session";
++import { db } from "@/lib/db/client";
++import { userTenantMappings } from "@/lib/db/schema";
++import { listAuditEvents, AuditEventsError } from "@/modules/audit/application/list-audit-events";
++import { StatusTimeline } from "@/components/audit/status-timeline";
++import type { AuditEventRecord, AuditTimelineEntry } from "@/modules/audit/domain/audit-event-filters";
++import { SupportCasePanel } from "@/components/support/support-case-panel";
++import { getSupportCase, SupportCaseError } from "@/modules/support/application/get-support-case";
++import type { SupportCase } from "@/modules/support/domain/support-case";
++
++type RhAuditSearchParams = {
++  from?: string;
++  to?: string;
++  batch_id?: string;
++  document_id?: string;
++  user_id?: string;
++  case_id?: string;
++  page?: string;
++  page_size?: string;
++};
++
++type AuditPagination = {
++  page: number;
++  page_size: number;
++  total: number;
++  total_pages: number;
++};
++
++type RhAuditFilters = {
++  from: string;
++  to: string;
++  batch_id: string;
++  document_id: string;
++  user_id: string;
++  case_id: string;
++  page: number;
++  page_size: number;
++};
++
++function parsePositiveInteger(value: string | undefined, fallback: number): number {
++  const parsed = Number.parseInt(value ?? `${fallback}`, 10);
++  if (!Number.isFinite(parsed) || parsed <= 0) {
++    return fallback;
++  }
++
++  return parsed;
++}
++
++export function buildAuditFilters(searchParams?: RhAuditSearchParams): RhAuditFilters {
++  return {
++    from: searchParams?.from ?? "",
++    to: searchParams?.to ?? "",
++    batch_id: searchParams?.batch_id ?? "",
++    document_id: searchParams?.document_id ?? "",
++    user_id: searchParams?.user_id ?? "",
++    case_id: searchParams?.case_id ?? "",
++    page: parsePositiveInteger(searchParams?.page, 1),
++    page_size: parsePositiveInteger(searchParams?.page_size, 20),
++  };
++}
++
++async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
++  const mappings = await db
++    .select({ role: userTenantMappings.role })
++    .from(userTenantMappings)
++    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
++    .limit(1);
++
++  return mappings[0]?.role as RbacRole | undefined;
++}
++
++async function loadAuditData(filters: RhAuditFilters) {
++  const sessionToken = cookies().get(SESSION_COOKIE_NAME)?.value;
++  if (!sessionToken) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      supportCase: null as SupportCase | null,
++      supportCaseError: null as string | null,
++      errorMessage: "Sessao ausente.",
++    };
++  }
++
++  const session = await validateSession(sessionToken);
++  if (!session) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      supportCase: null as SupportCase | null,
++      supportCaseError: null as string | null,
++      errorMessage: "Sessao invalida ou expirada.",
++    };
++  }
++
++  const role = await resolveTenantRole(session.userId, session.tenantId);
++  if (!role) {
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      supportCase: null as SupportCase | null,
++      supportCaseError: null as string | null,
++      errorMessage: "Usuario sem permissao no tenant.",
++    };
++  }
++
++  const allowedRoles: RbacRole[] = ["rh_operator", "rh_gestor", "suporte", "admin_plataforma"];
++
++  try {
++    assertTenantAction({
++      actorRole: role,
++      actorTenantId: session.tenantId,
++      targetTenantId: session.tenantId,
++      action: RBAC_ACTIONS.tenantRead,
++    });
++
++    if (!allowedRoles.includes(role)) {
++      return {
++        events: [] as AuditEventRecord[],
++        timeline: [] as AuditTimelineEntry[],
++        pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++        supportCase: null as SupportCase | null,
++        supportCaseError: null as string | null,
++        errorMessage: "Perfil sem permissao para consultar auditoria.",
++      };
++    }
++
++    const data = await listAuditEvents({
++      tenantId: session.tenantId,
++      from: filters.from || undefined,
++      to: filters.to || undefined,
++      batchId: filters.batch_id || undefined,
++      documentId: filters.document_id || undefined,
++      userId: filters.user_id || undefined,
++      page: filters.page,
++      pageSize: filters.page_size,
++    });
++
++    let supportCase: SupportCase | null = null;
++    let supportCaseError: string | null = null;
++
++    if (filters.case_id.trim()) {
++      const caseViewRoles: RbacRole[] = ["rh_gestor", "suporte", "admin_plataforma"];
++      if (!caseViewRoles.includes(role)) {
++        supportCaseError = "Perfil sem permissao para consultar consolidacao de caso de suporte.";
++      } else {
++      try {
++        supportCase = await getSupportCase({
++          tenantId: session.tenantId,
++          caseId: filters.case_id.trim(),
++          from: filters.from || undefined,
++          to: filters.to || undefined,
++          batchId: filters.batch_id || undefined,
++          documentId: filters.document_id || undefined,
++          userId: filters.user_id || undefined,
++        });
++      } catch (error) {
++        if (error instanceof SupportCaseError) {
++          supportCaseError = error.message;
++        } else {
++          supportCaseError = "Falha ao carregar consolidacao de caso de suporte.";
++        }
++      }
++      }
++    }
++
++    return {
++      events: data.events,
++      timeline: data.timeline,
++      pagination: data.pagination,
++      supportCase,
++      supportCaseError,
++      errorMessage: null,
++    };
++  } catch (error) {
++    if (error instanceof AuditEventsError) {
++      return {
++        events: [] as AuditEventRecord[],
++        timeline: [] as AuditTimelineEntry[],
++        pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++        supportCase: null as SupportCase | null,
++        supportCaseError: null as string | null,
++        errorMessage: error.message,
++      };
++    }
++
++    return {
++      events: [] as AuditEventRecord[],
++      timeline: [] as AuditTimelineEntry[],
++      pagination: { page: 1, page_size: filters.page_size, total: 0, total_pages: 1 } as AuditPagination,
++      supportCase: null as SupportCase | null,
++      supportCaseError: null as string | null,
++      errorMessage: "Falha ao carregar trilha de auditoria.",
++    };
++  }
++}
++
++export function RhAuditPageView(props: {
++  filters: RhAuditFilters;
++  events: AuditEventRecord[];
++  timeline: AuditTimelineEntry[];
++  pagination: AuditPagination;
++  supportCase: SupportCase | null;
++  supportCaseError?: string | null;
++  errorMessage?: string | null;
++}) {
++  const { filters, events, timeline, pagination, supportCase, supportCaseError, errorMessage } = props;
++
++  return (
++    <main>
++      <h1>Trilha de auditoria</h1>
++
++      <section aria-label="Filtrar eventos">
++        <h2>Filtrar eventos</h2>
++        <form method="get">
++          <label>
++            De
++            <input type="datetime-local" name="from" defaultValue={filters.from} />
++          </label>
++          <label>
++            Ate
++            <input type="datetime-local" name="to" defaultValue={filters.to} />
++          </label>
++          <label>
++            Lote
++            <input type="text" name="batch_id" defaultValue={filters.batch_id} />
++          </label>
++          <label>
++            Documento
++            <input type="text" name="document_id" defaultValue={filters.document_id} />
++          </label>
++          <label>
++            Usuario
++            <input type="text" name="user_id" defaultValue={filters.user_id} />
++          </label>
++          <label>
++            Case ID
++            <input type="text" name="case_id" defaultValue={filters.case_id} />
++          </label>
++          <label>
++            Pagina
++            <input type="number" min={1} name="page" defaultValue={filters.page} />
++          </label>
++          <label>
++            Itens por pagina
++            <input type="number" min={1} max={100} name="page_size" defaultValue={filters.page_size} />
++          </label>
++          <button type="submit">Aplicar filtros</button>
++        </form>
++      </section>
++
++      {errorMessage ? <p role="status">{errorMessage}</p> : null}
++
++      <section aria-label="Lista de eventos">
++        <h2>Eventos</h2>
++        {events.length === 0 ? (
++          <p>Nenhum evento encontrado para os filtros atuais.</p>
++        ) : (
++          <ul>
++            {events.map((event) => (
++              <li key={event.id}>
++                <strong>{event.action}</strong>
++                <div>Status: {event.status}</div>
++                <div>Recurso: {event.resource_type}</div>
++                <div>Recurso ID: {event.resource_id}</div>
++                <div>Correlation ID: {event.correlation_id}</div>
++                <div>Ator: {event.actor_id ?? "sistema"}</div>
++                <div>Data: {event.created_at}</div>
++              </li>
++            ))}
++          </ul>
++        )}
++        <p>
++          Pagina {pagination.page} de {pagination.total_pages} - Total de eventos: {pagination.total}
++        </p>
++      </section>
++
++      <StatusTimeline items={timeline} />
++
++      <SupportCasePanel supportCase={supportCase} errorMessage={supportCaseError} />
++    </main>
++  );
++}
++
++export default async function RhAuditoriaPage({ searchParams }: { searchParams?: RhAuditSearchParams }) {
++  const filters = buildAuditFilters(searchParams);
++  const data = await loadAuditData(filters);
++
++  return (
++    <RhAuditPageView
++      filters={filters}
++      events={data.events}
++      timeline={data.timeline}
++      pagination={data.pagination}
++      supportCase={data.supportCase}
++      supportCaseError={data.supportCaseError}
++      errorMessage={data.errorMessage}
++    />
++  );
++}
+===== DIFF: __tests__/support-cases-api.test.ts (untracked) =====
+diff --git a/__tests__/support-cases-api.test.ts b/__tests__/support-cases-api.test.ts
+new file mode 100644
+index 0000000..cf1a6b8
+--- /dev/null
++++ b/__tests__/support-cases-api.test.ts
+@@ -0,0 +1,282 @@
++import { NextRequest } from "next/server";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
++
++const {
++  validateSessionMock,
++  dbSelectMock,
++  dbFromMock,
++  dbWhereMock,
++  dbLimitMock,
++  getSupportCaseMock,
++  resolveSupportCaseMock,
++  SupportCaseError,
++} = vi.hoisted(() => ({
++  validateSessionMock: vi.fn(),
++  dbSelectMock: vi.fn(),
++  dbFromMock: vi.fn(),
++  dbWhereMock: vi.fn(),
++  dbLimitMock: vi.fn(),
++  getSupportCaseMock: vi.fn(),
++  resolveSupportCaseMock: vi.fn(),
++  SupportCaseError: class extends Error {
++    constructor(
++      public readonly code: string,
++      message: string,
++      public readonly statusCode: number,
++      public readonly details?: Record<string, unknown>,
++    ) {
++      super(message);
++      this.name = "SupportCaseError";
++    }
++  },
++}));
++
++vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
++
++vi.mock("@/lib/db/client", () => ({
++  db: {
++    select: dbSelectMock.mockReturnValue({
++      from: dbFromMock.mockReturnValue({
++        where: dbWhereMock.mockReturnValue({
++          limit: dbLimitMock,
++        }),
++      }),
++    }),
++    insert: vi.fn().mockReturnValue({
++      values: vi.fn().mockResolvedValue(undefined),
++    }),
++  },
++}));
++
++vi.mock("@/modules/support/application/get-support-case", () => ({
++  getSupportCase: getSupportCaseMock,
++  SupportCaseError,
++}));
++
++vi.mock("@/modules/support/application/resolve-support-case", () => ({
++  resolveSupportCase: resolveSupportCaseMock,
++  SupportCaseError,
++}));
++
++import { GET as getSupportCaseRoute } from "@/app/api/v1/support/cases/[caseId]/route";
++import { POST as resolveSupportCaseRoute } from "@/app/api/v1/support/cases/[caseId]/resolve/route";
++
++describe("support cases api", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++
++    validateSessionMock.mockResolvedValue({
++      userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      tenantId: SESSION_TENANT_ID,
++    });
++
++    dbLimitMock.mockResolvedValue([{ role: "suporte" }]);
++
++    getSupportCaseMock.mockResolvedValue({
++      case_id: "22222222-2222-4222-8222-222222222222",
++      tenant_id: SESSION_TENANT_ID,
++      status: "open",
++      severity: "warning",
++      links: {
++        batch_id: null,
++        document_id: null,
++        user_id: null,
++      },
++      technical_history: [],
++      functional_history: [],
++      resolution: null,
++    });
++
++    resolveSupportCaseMock.mockResolvedValue({
++      case_id: "22222222-2222-4222-8222-222222222222",
++      previous_status: "in_treatment",
++      status: "resolved",
++      resolved_at: "2026-04-13T12:00:00.000Z",
++    });
++  });
++
++  it("returns support case with correlation id", async () => {
++    const request = new NextRequest(
++      "http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222?from=2026-04-13T00:00:00.000Z&to=2026-04-13T23:59:59.000Z",
++      {
++        method: "GET",
++        headers: {
++          cookie: "session_id=token",
++          "x-correlation-id": "33333333-3333-4333-8333-333333333333",
++        },
++      },
++    );
++
++    const response = await getSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(response.headers.get("x-correlation-id")).toBe("33333333-3333-4333-8333-333333333333");
++    expect(body.data.case_id).toBe("22222222-2222-4222-8222-222222222222");
++  });
++
++  it("returns 400 for invalid support case id", async () => {
++    const request = new NextRequest("http://localhost/api/v1/support/cases/invalid", {
++      method: "GET",
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await getSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "invalid" }),
++    });
++
++    expect(response.status).toBe(400);
++    expect(getSupportCaseMock).not.toHaveBeenCalled();
++  });
++
++  it("returns 401 when session is missing", async () => {
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222", {
++      method: "GET",
++    });
++
++    const response = await getSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(401);
++  });
++
++  it("returns 403 for unauthorized role", async () => {
++    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
++
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222", {
++      method: "GET",
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await getSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(403);
++  });
++
++  it("maps 404 from support case domain", async () => {
++    getSupportCaseMock.mockRejectedValue(new SupportCaseError("NOT_FOUND", "Caso nao encontrado.", 404));
++
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222", {
++      method: "GET",
++      headers: { cookie: "session_id=token" },
++    });
++
++    const response = await getSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++    const body = await response.json();
++
++    expect(response.status).toBe(404);
++    expect(body.error.code).toBe("NOT_FOUND");
++  });
++
++  it("resolves support case", async () => {
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222/resolve", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++        "x-correlation-id": "33333333-3333-4333-8333-333333333333",
++      },
++      body: JSON.stringify({
++        cause_code: "ROUTING_FAILURE",
++        action_applied: "Reprocessamento seletivo executado",
++        result_status: "resolved",
++        recovery: {
++          batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++          idempotency_key: "recovery-1",
++        },
++      }),
++    });
++
++    const response = await resolveSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(200);
++    expect(resolveSupportCaseMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        caseId: "22222222-2222-4222-8222-222222222222",
++        tenantId: SESSION_TENANT_ID,
++        resultStatus: "resolved",
++      }),
++    );
++  });
++
++  it("returns 400 for invalid resolve payload", async () => {
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222/resolve", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({
++        cause_code: "",
++        action_applied: "",
++        result_status: "invalid",
++      }),
++    });
++
++    const response = await resolveSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(400);
++    expect(resolveSupportCaseMock).not.toHaveBeenCalled();
++  });
++
++  it("returns 403 for resolve without support role", async () => {
++    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
++
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222/resolve", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({
++        cause_code: "ROUTING_FAILURE",
++        action_applied: "Acao",
++        result_status: "resolved",
++      }),
++    });
++
++    const response = await resolveSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(403);
++  });
++
++  it("maps 409 from resolve domain", async () => {
++    resolveSupportCaseMock.mockRejectedValue(
++      new SupportCaseError("INVALID_STATE_TRANSITION", "Transicao invalida.", 409),
++    );
++
++    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222/resolve", {
++      method: "POST",
++      headers: {
++        cookie: "session_id=token",
++        "content-type": "application/json",
++      },
++      body: JSON.stringify({
++        cause_code: "ROUTING_FAILURE",
++        action_applied: "Acao",
++        result_status: "resolved",
++      }),
++    });
++
++    const response = await resolveSupportCaseRoute(request, {
++      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
++    });
++
++    expect(response.status).toBe(409);
++  });
++});
+===== DIFF: __tests__/support-case-domain.test.ts (untracked) =====
+diff --git a/__tests__/support-case-domain.test.ts b/__tests__/support-case-domain.test.ts
+new file mode 100644
+index 0000000..d580f01
+--- /dev/null
++++ b/__tests__/support-case-domain.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from "vitest";
++import {
++  deriveSupportCaseSeverity,
++  deriveSupportCaseStatus,
++  isValidSupportCaseStatusTransition,
++  normalizeSupportCaseFilters,
++} from "@/modules/support/domain/support-case";
++
++describe("support case domain", () => {
++  it("normalizes filters and validates period", () => {
++    const filters = normalizeSupportCaseFilters({
++      from: "2026-04-13T00:00:00.000Z",
++      to: "2026-04-13T23:59:59.000Z",
++      batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      documentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
++      userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++    });
++
++    expect(filters.batchId).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
++    expect(filters.documentId).toBe("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
++    expect(filters.userId).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
++  });
++
++  it("rejects invalid transitions", () => {
++    expect(isValidSupportCaseStatusTransition("open", "in_treatment")).toBe(true);
++    expect(isValidSupportCaseStatusTransition("in_treatment", "resolved")).toBe(true);
++    expect(isValidSupportCaseStatusTransition("resolved", "open")).toBe(false);
++  });
++
++  it("derives status and severity from events", () => {
++    const events = [
++      {
++        id: "evt-1",
++        action: "support.case.recovery.triggered.v1",
++        status: "success" as const,
++        resource_type: "support_case",
++        resource_id: "22222222-2222-4222-8222-222222222222",
++        actor_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++        correlation_id: "22222222-2222-4222-8222-222222222222",
++        created_at: "2026-04-13T10:00:00.000Z",
++        details: { severity: "critical" },
++      },
++    ];
++
++    expect(deriveSupportCaseStatus(events)).toBe("in_treatment");
++    expect(deriveSupportCaseSeverity(events)).toBe("critical");
++  });
++});
+===== DIFF: __tests__/support-case-application.test.ts (untracked) =====
+diff --git a/__tests__/support-case-application.test.ts b/__tests__/support-case-application.test.ts
+new file mode 100644
+index 0000000..9134da7
+--- /dev/null
++++ b/__tests__/support-case-application.test.ts
+@@ -0,0 +1,44 @@
++import { describe, expect, it, vi } from "vitest";
++
++const { resolveSupportCaseInDbMock } = vi.hoisted(() => ({
++  resolveSupportCaseInDbMock: vi.fn(),
++}));
++
++vi.mock("@/modules/support/infrastructure/support-cases-repository", () => ({
++  resolveSupportCaseInDb: resolveSupportCaseInDbMock,
++}));
++
++import { resolveSupportCase } from "@/modules/support/application/resolve-support-case";
++
++describe("support case application", () => {
++  it("forwards idempotency key to recovery flow", async () => {
++    resolveSupportCaseInDbMock.mockResolvedValue({
++      case_id: "22222222-2222-4222-8222-222222222222",
++      previous_status: "in_treatment",
++      status: "resolved",
++      resolved_at: "2026-04-13T13:00:00.000Z",
++    });
++
++    await resolveSupportCase({
++      tenantId: "11111111-1111-4111-8111-111111111111",
++      actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++      caseId: "22222222-2222-4222-8222-222222222222",
++      correlationId: "33333333-3333-4333-8333-333333333333",
++      causeCode: "ROOT_CAUSE",
++      actionApplied: "Acao aplicada",
++      resultStatus: "resolved",
++      recovery: {
++        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++        idempotencyKey: "idempotency-1",
++      },
++    });
++
++    expect(resolveSupportCaseInDbMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        recovery: expect.objectContaining({
++          idempotencyKey: "idempotency-1",
++        }),
++      }),
++    );
++  });
++});
+===== DIFF: __tests__/support-case-ui.test.tsx (untracked) =====
+diff --git a/__tests__/support-case-ui.test.tsx b/__tests__/support-case-ui.test.tsx
+new file mode 100644
+index 0000000..f25a145
+--- /dev/null
++++ b/__tests__/support-case-ui.test.tsx
+@@ -0,0 +1,100 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vitest";
++import { SupportCasePanel } from "@/components/support/support-case-panel";
++
++describe("support case ui", () => {
++  it("renders consolidated support case and resolution form", () => {
++    const html = renderToStaticMarkup(
++      <SupportCasePanel
++        supportCase={{
++          case_id: "22222222-2222-4222-8222-222222222222",
++          tenant_id: "11111111-1111-4111-8111-111111111111",
++          status: "in_treatment",
++          severity: "critical",
++          links: {
++            batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++            document_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
++            user_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++          },
++          technical_history: [
++            {
++              id: "evt-1",
++              action: "support.case.recovery.triggered.v1",
++              status: "success",
++              resource_type: "support_case",
++              resource_id: "22222222-2222-4222-8222-222222222222",
++              actor_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++              correlation_id: "22222222-2222-4222-8222-222222222222",
++              created_at: "2026-04-13T12:00:00.000Z",
++              details: null,
++            },
++          ],
++          timeline: [
++            {
++              event_id: "evt-1",
++              action: "support.case.recovery.triggered.v1",
++              status: "success",
++              occurred_at: "2026-04-13T12:00:00.000Z",
++            },
++          ],
++          functional_history: [
++            {
++              source: "alerts",
++              status: "warning",
++              message: "ROUTING_INCOMPLETE",
++              occurred_at: "2026-04-13T12:00:00.000Z",
++            },
++          ],
++          resolution: null,
++        }}
++      />,
++    );
++
++    expect(html).toContain("Caso de suporte");
++    expect(html).toContain("Formulario de resolucao");
++    expect(html).toContain("cause_code");
++    expect(html).toContain("action_applied");
++    expect(html).toContain("result_status");
++    expect(html).toContain("Linha do tempo");
++  });
++
++  it("renders empty and error states", () => {
++    const emptyHtml = renderToStaticMarkup(<SupportCasePanel supportCase={null} />);
++    expect(emptyHtml).toContain("Nenhum caso de suporte selecionado");
++
++    const errorHtml = renderToStaticMarkup(<SupportCasePanel supportCase={null} errorMessage="Falha" />);
++    expect(errorHtml).toContain("Falha");
++  });
++
++  it("renders final evidence when case is resolved", () => {
++    const html = renderToStaticMarkup(
++      <SupportCasePanel
++        supportCase={{
++          case_id: "22222222-2222-4222-8222-222222222222",
++          tenant_id: "11111111-1111-4111-8111-111111111111",
++          status: "resolved",
++          severity: "info",
++          links: {
++            batch_id: null,
++            document_id: null,
++            user_id: null,
++          },
++          technical_history: [],
++          timeline: [],
++          functional_history: [],
++          resolution: {
++            cause_code: "ROOT_CAUSE",
++            action_applied: "Acao aplicada",
++            result_status: "resolved",
++            resolved_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++            resolved_at: "2026-04-13T13:00:00.000Z",
++          },
++        }}
++      />,
++    );
++
++    expect(html).toContain("Evidencia de resolucao");
++    expect(html).toContain("ROOT_CAUSE");
++    expect(html).toContain("Acao aplicada");
++  });
++});

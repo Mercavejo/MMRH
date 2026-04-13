@@ -11,6 +11,8 @@ import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability
 import { isTimestampWithinSkew, isValidHmacSignature, signHmacSha256Hex } from "@/lib/security/hmac-signature";
 import { listExternalIngestions, ExternalIngestionError } from "@/modules/integrations/application/list-external-ingestions";
 import { registerExternalIngestion } from "@/modules/integrations/application/register-external-ingestion";
+import { resolveExternalIdentifierMappingForIntake } from "@/modules/integrations/application/resolve-external-identifier-mapping";
+import { upsertExternalIdentifierMappingRule } from "@/modules/integrations/application/upsert-external-identifier-mapping";
 import {
   AUTHORIZED_EXTERNAL_SOURCES,
   type AuthorizedExternalSource,
@@ -39,6 +41,32 @@ const querySchema = z
         code: z.ZodIssueCode.custom,
         message: "Origem externa nao autorizada.",
         path: ["source_system"],
+      });
+    }
+  });
+
+const putMappingSchema = z
+  .object({
+    tenant_id: z.string().uuid(),
+    source_system: z.string().trim().min(1),
+    external_identifier: z.string().trim().min(1).max(255),
+    employee_id: z.string().uuid().nullable().optional(),
+    disable: z.boolean().optional(),
+  })
+  .superRefine((value, context) => {
+    if (!AUTHORIZED_EXTERNAL_SOURCES.includes(value.source_system as (typeof AUTHORIZED_EXTERNAL_SOURCES)[number])) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Origem externa nao autorizada.",
+        path: ["source_system"],
+      });
+    }
+
+    if (!value.disable && !value.employee_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "employee_id e obrigatorio quando disable=false.",
+        path: ["employee_id"],
       });
     }
   });
@@ -87,6 +115,16 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
     .limit(1);
 
   return mappings[0]?.role as RbacRole | undefined;
+}
+
+async function hasTenantMembership(userId: string, tenantId: string): Promise<boolean> {
+  const rows = await db
+    .select({ userId: userTenantMappings.userId })
+    .from(userTenantMappings)
+    .where(and(eq(userTenantMappings.userId, userId), eq(userTenantMappings.tenantId, tenantId)))
+    .limit(1);
+
+  return Boolean(rows[0]);
 }
 
 export async function POST(request: NextRequest) {
@@ -198,6 +236,50 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const mapping = await resolveExternalIdentifierMappingForIntake({
+      tenantId: parsedBody.data.tenant_id,
+      sourceSystem,
+      payloadSummary: parsedBody.data.payload_summary ?? {},
+    });
+
+    if (mapping.status !== "mapped") {
+      const mappingFailureCode = mapping.failure_code ?? "MAPPING_NOT_FOUND";
+      const mappingStatusCode = mappingFailureCode === "AMBIGUOUS_ASSOCIATION" ? 409 : 422;
+      const mappingMessage =
+        mappingFailureCode === "AMBIGUOUS_ASSOCIATION"
+          ? "Nao foi possivel resolver identificador externo para colaborador unico."
+          : "Nao foi possivel localizar mapeamento ativo para o identificador externo informado.";
+
+      await registerExternalIngestion({
+        tenantId: parsedBody.data.tenant_id,
+        sourceSystem,
+        contractVersion: parsedBody.data.contract_version,
+        sourceReference: parsedBody.data.source_reference,
+        idempotencyKey: parsedBody.data.idempotency_key,
+        payloadSummary: parsedBody.data.payload_summary,
+        externalIdentifier: mapping.external_identifier,
+        mappedEmployeeId: null,
+        mappingVersion: null,
+        mappingStatus: mapping.status,
+        failureCode: mappingFailureCode,
+        recommendedAction: mapping.recommended_action,
+        status: "failed",
+        correlationId,
+      });
+
+      return jsonResponse(
+        errorResponse(mappingFailureCode, mappingMessage, correlationId, {
+          source_system: sourceSystem,
+          tenant_id: parsedBody.data.tenant_id,
+          external_identifier: mapping.external_identifier,
+          failure_code: mapping.failure_code,
+          recommended_action: mapping.recommended_action,
+        }),
+        correlationId,
+        { status: mappingStatusCode },
+      );
+    }
+
     const record = await registerExternalIngestion({
       tenantId: parsedBody.data.tenant_id,
       sourceSystem,
@@ -205,6 +287,13 @@ export async function POST(request: NextRequest) {
       sourceReference: parsedBody.data.source_reference,
       idempotencyKey: parsedBody.data.idempotency_key,
       payloadSummary: parsedBody.data.payload_summary,
+      externalIdentifier: mapping.external_identifier,
+      mappedEmployeeId: mapping.mapped_employee_id,
+      mappingVersion: mapping.mapping_version,
+      mappingStatus: mapping.status,
+      failureCode: null,
+      recommendedAction: null,
+      status: "received",
       correlationId,
     });
 
@@ -223,6 +312,128 @@ export async function POST(request: NextRequest) {
         failure_code: "PROCESSING_FAILURE",
         recommended_action: "Revise os logs tecnicos e tente novamente.",
       }),
+      correlationId,
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
+  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+
+  if (!sessionToken) {
+    return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
+      status: 401,
+    });
+  }
+
+  const session = await validateSession(sessionToken);
+  if (!session) {
+    return jsonResponse(
+      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
+      correlationId,
+      { status: 401 },
+    );
+  }
+
+  const role = await resolveTenantRole(session.userId, session.tenantId);
+  if (!role) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  let parsedBodyValue: unknown;
+  try {
+    parsedBodyValue = await request.json();
+  } catch {
+    parsedBodyValue = null;
+  }
+
+  const parsedBody = putMappingSchema.safeParse(parsedBodyValue);
+  if (!parsedBody.success) {
+    return jsonResponse(
+      errorResponse("VALIDATION_ERROR", "Payload de mapeamento invalido.", correlationId, {
+        issues: parsedBody.error.issues,
+      }),
+      correlationId,
+      { status: 400 },
+    );
+  }
+
+  if (parsedBody.data.tenant_id !== session.tenantId) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Acesso cross-tenant nao permitido.", correlationId),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  const allowedRoles: RbacRole[] = ["admin_plataforma"];
+  if (!allowedRoles.includes(role)) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Perfil sem permissao para alterar mapeamentos.", correlationId),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  try {
+    assertTenantAction({
+      actorRole: role,
+      actorTenantId: session.tenantId,
+      targetTenantId: parsedBody.data.tenant_id,
+      action: RBAC_ACTIONS.tenantWrite,
+    });
+  } catch (error) {
+    return jsonResponse(
+      errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
+        cause: (error as Error).message,
+      }),
+      correlationId,
+      { status: 403 },
+    );
+  }
+
+  if (!parsedBody.data.disable && parsedBody.data.employee_id) {
+    const employeeInTenant = await hasTenantMembership(parsedBody.data.employee_id, session.tenantId);
+    if (!employeeInTenant) {
+      return jsonResponse(
+        errorResponse("FORBIDDEN", "employee_id nao pertence ao tenant da sessao.", correlationId),
+        correlationId,
+        { status: 403 },
+      );
+    }
+  }
+
+  try {
+    const result = await upsertExternalIdentifierMappingRule({
+      tenantId: parsedBody.data.tenant_id,
+      sourceSystem: parsedBody.data.source_system,
+      externalIdentifier: parsedBody.data.external_identifier,
+      employeeId: parsedBody.data.employee_id ?? null,
+      disable: Boolean(parsedBody.data.disable),
+      actorId: session.userId,
+      correlationId,
+    });
+
+    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId, {
+      status: 200,
+    });
+  } catch (error) {
+    if (error instanceof ExternalIngestionError) {
+      return jsonResponse(
+        errorResponse(error.code, error.message, correlationId, error.details),
+        correlationId,
+        { status: error.statusCode },
+      );
+    }
+
+    return jsonResponse(
+      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao atualizar mapeamento externo.", correlationId),
       correlationId,
       { status: 500 },
     );
