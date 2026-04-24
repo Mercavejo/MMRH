@@ -49,7 +49,7 @@ describe("rbac", () => {
   it("exposes permissions per role", () => {
     expect(getRolePermissions("rh_gestor")).toEqual([
       RBAC_ACTIONS.tenantRead,
-      RBAC_ACTIONS.auditRead,
+      RBAC_ACTIONS.tenantWrite,
     ]);
   });
 

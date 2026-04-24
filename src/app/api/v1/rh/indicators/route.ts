@@ -15,6 +15,7 @@ import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
 } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
 import {
   getOperationalIndicators,
   OperationalIndicatorsError,
@@ -49,8 +50,12 @@ function withCorrelationHeader(response: NextResponse, correlationId: string) {
 function jsonResponse<T>(
   body: ReturnType<typeof errorResponse<T>> | ReturnType<typeof successResponse<T>>,
   correlationId: string,
+  startTime: number,
   init?: ResponseInit,
 ) {
+  if (body && body.meta) {
+    body.meta.response_time_ms = Math.round(performance.now() - startTime);
+  }
   return withCorrelationHeader(NextResponse.json(body, init), correlationId);
 }
 
@@ -65,44 +70,54 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
 }
 
 export async function GET(request: NextRequest) {
+  const startTime = performance.now();
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
   const parsedQuery = querySchema.safeParse(
     Object.fromEntries(request.nextUrl.searchParams.entries()),
   );
 
   if (!parsedQuery.success) {
+    const fallbackTenant = request.cookies.get(SESSION_COOKIE_NAME)?.value ? "unknown" : "anonymous";
+    await writePlaytestEvent({ tenantId: fallbackTenant, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "validation_error", issues: parsedQuery.error.issues } });
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "Parametros de consulta invalidos.", correlationId, {
         issues: parsedQuery.error.issues,
       }),
       correlationId,
+      startTime,
       { status: 400 },
     );
   }
 
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionToken) {
+    await writePlaytestEvent({ tenantId: "anonymous", correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "unauthorized", reason: "Sessao ausente" } });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId),
       correlationId,
+      startTime,
       { status: 401 },
     );
   }
 
   const session = await validateSession(sessionToken);
   if (!session) {
+    await writePlaytestEvent({ tenantId: "anonymous", correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "unauthorized", reason: "Sessao invalida ou expirada" } });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
       correlationId,
+      startTime,
       { status: 401 },
     );
   }
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Usuario sem permissao no tenant" } });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
       correlationId,
+      startTime,
       { status: 403 },
     );
   }
@@ -115,17 +130,20 @@ export async function GET(request: NextRequest) {
       action: RBAC_ACTIONS.tenantRead,
     });
   } catch (error) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Acesso negado pelo RBAC" } });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
         cause: (error as Error).message,
       }),
       correlationId,
+      startTime,
       { status: 403 },
     );
   }
 
-  const allowedRoles: RbacRole[] = ["rh_operator", "rh_gestor", "admin_plataforma"];
+  const allowedRoles: RbacRole[] = ["admin_plataforma"];
   if (!allowedRoles.includes(role)) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Perfil sem permissao" } });
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",
@@ -133,6 +151,7 @@ export async function GET(request: NextRequest) {
         correlationId,
       ),
       correlationId,
+      startTime,
       { status: 403 },
     );
   }
@@ -146,16 +165,21 @@ export async function GET(request: NextRequest) {
       organizationalUnit: parsedQuery.data.organizational_unit,
     });
 
-    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.view", resourceType: "indicators", status: "success", details: { period: { from: parsedQuery.data.from, to: parsedQuery.data.to } } });
+
+    return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId, startTime);
   } catch (error) {
     if (error instanceof OperationalIndicatorsError) {
+      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "domain_error", code: error.code } });
       return jsonResponse(
         errorResponse(error.code, error.message, correlationId, error.details),
         correlationId,
+        startTime,
         { status: error.statusCode },
       );
     }
 
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "internal_error", error: (error as Error).message } });
     return jsonResponse(
       errorResponse(
         "INTERNAL_SERVER_ERROR",
@@ -163,6 +187,7 @@ export async function GET(request: NextRequest) {
         correlationId,
       ),
       correlationId,
+      startTime,
       { status: 500 },
     );
   }

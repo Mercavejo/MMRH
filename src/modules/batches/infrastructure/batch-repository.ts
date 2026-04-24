@@ -1,8 +1,8 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { batches, exceptions } from "@/lib/db/schema";
 
-type DbLike = typeof db;
+type DbLike = Pick<typeof db, "select" | "update">;
 
 export type BatchPublicationSnapshot = {
   id: string;
@@ -173,4 +173,37 @@ export async function markBatchPublicationFailed(
       updatedAt: now,
     })
     .where(and(eq(batches.id, input.batchId), eq(batches.tenantId, input.tenantId)));
+}
+
+export async function loadLatestBatch(
+  input: { tenantId: string },
+  dbClient: DbLike = db,
+): Promise<BatchPublicationSnapshot | null> {
+  const rows = await dbClient
+    .select({
+      id: batches.id,
+      tenantId: batches.tenantId,
+      validationStatus: batches.validationStatus,
+      routingStatus: batches.routingStatus,
+      routingTotalCount: batches.routingTotalCount,
+      routingMatchedCount: batches.routingMatchedCount,
+      routingPendingCount: batches.routingPendingCount,
+      routingFailedCount: batches.routingFailedCount,
+      routingAmbiguousCount: batches.routingAmbiguousCount,
+      routingBlockedReason: batches.routingBlockedReason,
+      routingProcessedAt: batches.routingProcessedAt,
+      publicationStatus: batches.publicationStatus,
+      publicationAttempts: batches.publicationAttempts,
+      publishedAt: batches.publishedAt,
+      publishedBy: batches.publishedBy,
+      lastPublicationCorrelationId: batches.lastPublicationCorrelationId,
+      lastPublicationIdempotencyKey: batches.lastPublicationIdempotencyKey,
+      lastPublicationError: batches.lastPublicationError,
+    })
+    .from(batches)
+    .where(eq(batches.tenantId, input.tenantId))
+    .orderBy(sql`created_at desc`)
+    .limit(1);
+
+  return rows[0] ?? null;
 }

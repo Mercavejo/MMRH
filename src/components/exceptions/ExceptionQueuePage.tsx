@@ -231,24 +231,36 @@ export function ExceptionQueuePageView(props: {
   );
 }
 
-export function ExceptionQueuePage(props: { initialBatchId?: string }) {
-  const hasInitialData = Boolean((props as { initialItems?: ExceptionQueueItem[] }).initialItems?.length);
-  const queueRequestIdRef = useRef(0);
-  const detailRequestIdRef = useRef(0);
-  const [filters, setFilters] = useState<QueueFilters>({
+type ExceptionQueuePageProps = {
+  initialBatchId?: string;
+  initialItems?: ExceptionQueueItem[];
+  initialMetadata?: ExceptionQueueMetadata | null;
+  initialErrorMessage?: string | null;
+  initialFilters?: QueueFilters;
+};
+
+export function ExceptionQueuePage(props: ExceptionQueuePageProps) {
+  const initialFilters = props.initialFilters ?? {
     batchId: props.initialBatchId ?? "",
     priority: "",
     state: "",
     skip: 0,
     take: 20,
-  });
-  const [items, setItems] = useState<ExceptionQueueItem[]>((props as { initialItems?: ExceptionQueueItem[] }).initialItems ?? []);
+  };
+  const hasInitialPayload =
+    props.initialItems !== undefined ||
+    props.initialMetadata !== undefined ||
+    props.initialErrorMessage !== undefined;
+  const queueRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const [filters, setFilters] = useState<QueueFilters>(initialFilters);
+  const [items, setItems] = useState<ExceptionQueueItem[]>(props.initialItems ?? []);
   const [metadata, setMetadata] = useState<ExceptionQueueMetadata | null>(
-    (props as { initialMetadata?: ExceptionQueueMetadata | null }).initialMetadata ?? null,
+    props.initialMetadata ?? null,
   );
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(
-    (props as { initialErrorMessage?: string | null }).initialErrorMessage ?? null,
+    props.initialErrorMessage ?? null,
   );
   const [selectedException, setSelectedException] = useState<ExceptionDetail | null>(null);
   const [actionDescription, setActionDescription] = useState("");
@@ -294,7 +306,7 @@ export function ExceptionQueuePage(props: { initialBatchId?: string }) {
   }
 
   useEffect(() => {
-    if (filters.batchId.trim() && !hasInitialData) {
+    if (filters.batchId.trim() && !hasInitialPayload) {
       void loadQueue(filters);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

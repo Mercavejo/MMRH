@@ -10,6 +10,7 @@ const {
   dbWhereMock,
   dbLimitMock,
   getOperationalIndicatorsMock,
+  writePlaytestEventMock,
   OperationalIndicatorsError,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
   getOperationalIndicatorsMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
   OperationalIndicatorsError: class extends Error {
     constructor(
       public readonly code: string,
@@ -45,6 +47,10 @@ vi.mock("@/lib/db/client", () => ({
   },
 }));
 
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
+}));
+
 vi.mock("@/modules/indicators/application/get-operational-indicators", () => ({
   getOperationalIndicators: getOperationalIndicatorsMock,
   OperationalIndicatorsError,
@@ -61,7 +67,8 @@ describe("rh indicators api", () => {
       tenantId: SESSION_TENANT_ID,
     });
 
-    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
+    dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
+    writePlaytestEventMock.mockResolvedValue(undefined);
 
     getOperationalIndicatorsMock.mockResolvedValue({
       indicators: {
@@ -102,12 +109,16 @@ describe("rh indicators api", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
     expect(body.data.indicators.pendingCount).toBe(3);
+    expect(typeof body.meta.response_time_ms).toBe("number");
     expect(getOperationalIndicatorsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId: SESSION_TENANT_ID,
         batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         organizationalUnit: "financeiro",
       }),
+    );
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "playtest.rh.indicators.view", status: "success" })
     );
   });
 
@@ -124,6 +135,9 @@ describe("rh indicators api", () => {
 
     expect(response.status).toBe(400);
     expect(getOperationalIndicatorsMock).not.toHaveBeenCalled();
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "playtest.rh.indicators.friction", status: "failure", details: expect.objectContaining({ cause: "validation_error" }) })
+    );
   });
 
   it("returns 400 when batch_id is not a valid UUID", async () => {
@@ -180,5 +194,25 @@ describe("rh indicators api", () => {
 
     expect(response.status).toBe(400);
     expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("logs playtest friction on internal server error (500)", async () => {
+    getOperationalIndicatorsMock.mockRejectedValue(new Error("Database crash"));
+
+    const request = new NextRequest("http://localhost/api/v1/rh/indicators", {
+      method: "GET",
+      headers: { cookie: "session_id=token" },
+    });
+
+    const response = await GET(request);
+    
+    expect(response.status).toBe(500);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ 
+        action: "playtest.rh.indicators.friction", 
+        status: "failure", 
+        details: expect.objectContaining({ cause: "internal_error", error: "Database crash" }) 
+      })
+    );
   });
 });

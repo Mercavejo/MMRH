@@ -133,7 +133,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const allowedRoles: RbacRole[] = ["rh_operator", "rh_gestor", "suporte", "admin_plataforma"];
+  const allowedRoles: RbacRole[] = ["suporte", "admin_plataforma"];
   if (!allowedRoles.includes(role)) {
     return jsonResponse(
       errorResponse("FORBIDDEN", "Perfil sem permissao para consultar auditoria.", correlationId),

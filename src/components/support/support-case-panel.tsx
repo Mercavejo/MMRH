@@ -1,4 +1,21 @@
-import { Alert, Chip, Paper, Stack, Typography } from "@mui/material";
+"use client";
+
+import { useState } from "react";
+
+import {
+  Alert,
+  Button,
+  Box,
+  Chip,
+  FormControl,
+  Grid,
+  InputLabel,
+  NativeSelect,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { StatusTimeline } from "@/components/audit/status-timeline";
 import { tokens } from "@/lib/theme/tokens";
 import type { SupportCase } from "@/modules/support/domain/support-case";
@@ -20,6 +37,9 @@ export function SupportCasePanel(props: {
   errorMessage?: string | null;
   isLoading?: boolean;
 }) {
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   if (props.errorMessage) {
     return <Alert severity="error">{props.errorMessage}</Alert>;
   }
@@ -57,15 +77,29 @@ export function SupportCasePanel(props: {
           Historico funcional
         </Typography>
         {supportCase.functional_history.length === 0 ? (
-          <Typography variant="body2">Sem eventos funcionais para o caso.</Typography>
+          <Typography variant="body2" color="text.secondary">Sem eventos funcionais para o caso.</Typography>
         ) : (
-          <ul>
+          <Stack spacing={1} component="ol" sx={{ listStyle: "none", p: 0, m: 0 }}>
             {supportCase.functional_history.map((item, index) => (
-              <li key={`${item.source}-${item.occurred_at}-${index}`}>
-                <strong>{item.source}</strong> · {item.status} · {item.message}
-              </li>
+              <Box 
+                component="li"
+                key={`${item.source}-${item.occurred_at}-${index}`}
+                sx={{ 
+                  p: 1.5, 
+                  borderRadius: 2, 
+                  bgcolor: 'rgba(15, 23, 42, 0.02)',
+                  borderLeft: `3px solid ${
+                    item.status === 'success' ? tokens.colors.success : 
+                    (item.status === 'error' || item.status === 'failed') ? tokens.colors.danger : 
+                    tokens.colors.processing
+                  }`
+                }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.source}</Typography>
+                <Typography variant="body2" color="text.secondary">{item.message}</Typography>
+              </Box>
             ))}
-          </ul>
+          </Stack>
         )}
       </Paper>
 
@@ -75,26 +109,89 @@ export function SupportCasePanel(props: {
         <Typography variant="subtitle1" component="h3" gutterBottom>
           Formulario de resolucao
         </Typography>
-        <form method="post" action={`/api/v1/support/cases/${supportCase.case_id}/resolve`}>
-          <Stack spacing={2}>
-            <label htmlFor="support-cause-code">
-              cause_code
-              <input id="support-cause-code" name="cause_code" type="text" required />
-            </label>
-            <label htmlFor="support-action-applied">
-              action_applied
-              <input id="support-action-applied" name="action_applied" type="text" required />
-            </label>
-            <label htmlFor="support-result-status">
-              result_status
-              <select id="support-result-status" name="result_status" defaultValue="resolved">
-                <option value="resolved">resolved</option>
-                <option value="partial">partial</option>
-                <option value="failed">failed</option>
-              </select>
-            </label>
-            <button type="submit">Registrar resolucao</button>
-          </Stack>
+        {submitError ? (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {submitError}
+          </Alert>
+        ) : null}
+        <form 
+          method="post" 
+          action={`/api/v1/support/cases/${supportCase.case_id}/resolve`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const form = e.currentTarget;
+            setSubmitError(null);
+            setIsSubmitting(true);
+
+            try {
+              const response = await fetch(form.action, { method: 'POST', body: new FormData(form) });
+              if (!response.ok) {
+                const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+                setSubmitError(body?.error?.message ?? "Falha ao registrar resolução.");
+                return;
+              }
+
+              window.location.reload();
+            } catch {
+              setSubmitError("Falha de rede ao registrar resolução.");
+            } finally {
+              setIsSubmitting(false);
+            }
+          }}
+        >
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField 
+                fullWidth
+                label="Código da Causa"
+                id="support-cause-code" 
+                name="cause_code" 
+                required 
+                variant="outlined"
+                size="small"
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField 
+                fullWidth
+                label="Ação Aplicada"
+                id="support-action-applied" 
+                name="action_applied" 
+                required 
+                variant="outlined"
+                size="small"
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel htmlFor="support-result-status">
+                  Resultado
+                </InputLabel>
+                <NativeSelect
+                  id="support-result-status"
+                  name="result_status"
+                  defaultValue="resolved"
+                  aria-label="Resultado"
+                >
+                  <option value="resolved">Resolvido (Success)</option>
+                  <option value="partial">Parcial (Warning)</option>
+                  <option value="failed">Falha (Error)</option>
+                </NativeSelect>
+              </FormControl>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }} sx={{ display: 'flex', alignItems: 'flex-end' }}>
+              <Button 
+                type="submit" 
+                variant="contained" 
+                color="primary"
+                fullWidth
+                disabled={isSubmitting}
+                sx={{ borderRadius: 2 }}
+              >
+                {isSubmitting ? "Registrando..." : "Registrar Resolução"}
+              </Button>
+            </Grid>
+          </Grid>
         </form>
       </Paper>
 

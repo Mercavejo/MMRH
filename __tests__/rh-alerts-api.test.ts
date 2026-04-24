@@ -62,7 +62,7 @@ describe("rh alerts api", () => {
       tenantId: SESSION_TENANT_ID,
     });
 
-    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
+    dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
 
     getOperationalAlertsMock.mockResolvedValue({
       alerts: [

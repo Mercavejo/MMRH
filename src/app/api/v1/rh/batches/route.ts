@@ -11,6 +11,7 @@ import {
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
+import { buildCapabilityForbiddenDetails, ErrorCode } from "@/lib/api/errors";
 import {
   persistValidatedBatchImport,
   writeBatchImportAudit,
@@ -20,10 +21,15 @@ import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
 } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
+import { enforceCapability } from "@/modules/plans/application/enforce-capability";
+import { CapabilityForbiddenError, Capability } from "@/modules/plans/domain/capabilities";
 
 const uploadSchema = z.object({
   file: z.instanceof(File),
 });
+
+const batchImportRoles: readonly RbacRole[] = ["rh_operator", "rh_gestor", "admin_plataforma"];
 
 function withCorrelationHeader(response: NextResponse, correlationId: string) {
   response.headers.set(CORRELATION_ID_HEADER, correlationId);
@@ -45,6 +51,7 @@ export async function POST(request: NextRequest) {
 
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionToken) {
+    await writePlaytestEvent({ tenantId: "anonymous", correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "unauthorized" } });
     return withCorrelationHeader(
       NextResponse.json(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), { status: 401 }),
       correlationId,
@@ -53,6 +60,7 @@ export async function POST(request: NextRequest) {
 
   const session = await validateSession(sessionToken);
   if (!session) {
+    await writePlaytestEvent({ tenantId: "anonymous", correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "unauthorized" } });
     return withCorrelationHeader(
       NextResponse.json(errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId), { status: 401 }),
       correlationId,
@@ -61,8 +69,24 @@ export async function POST(request: NextRequest) {
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "forbidden" } });
     return withCorrelationHeader(
       NextResponse.json(errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId), { status: 403 }),
+      correlationId,
+    );
+  }
+
+  if (!batchImportRoles.includes(role)) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "forbidden", reason: "role mismatch" } });
+    return withCorrelationHeader(
+      NextResponse.json(
+        errorResponse(
+          "FORBIDDEN",
+          "Somente RH operador ou gestor pode importar relatorios de lote.",
+          correlationId,
+        ),
+        { status: 403 },
+      ),
       correlationId,
     );
   }
@@ -75,6 +99,7 @@ export async function POST(request: NextRequest) {
       action: RBAC_ACTIONS.tenantWrite,
     });
   } catch (error) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "forbidden", reason: "RBAC denied" } });
     return withCorrelationHeader(
       NextResponse.json(
         errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
@@ -86,18 +111,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (role !== "rh_operator") {
-    return withCorrelationHeader(
-      NextResponse.json(
-        errorResponse(
-          "FORBIDDEN",
-          "Somente RH operador pode importar relatorios de lote.",
+  if (role !== "rh_gestor") {
+    try {
+      await enforceCapability(session.tenantId, Capability.BATCH_INGESTION, session.userId, correlationId);
+    } catch (error) {
+      if (error instanceof CapabilityForbiddenError) {
+        await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "capability_forbidden", cap: error.capability } });
+        return withCorrelationHeader(
+          NextResponse.json(
+            errorResponse(
+              ErrorCode.CapabilityForbidden,
+              "Esta funcionalidade nao esta disponivel no plano atual.",
+              correlationId,
+              buildCapabilityForbiddenDetails({
+                capability: error.capability,
+                planCode: error.planCode,
+                correlationId,
+                upgradeHint: error.upgradeHint,
+              }),
+            ),
+            { status: 403 },
+          ),
           correlationId,
+        );
+      }
+      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "internal_error", error: (error as Error).message } });
+      return withCorrelationHeader(
+        NextResponse.json(
+          errorResponse("INTERNAL_SERVER_ERROR", "Falha ao validar capacidade do plano atual.", correlationId),
+          { status: 500 },
         ),
-        { status: 403 },
-      ),
-      correlationId,
-    );
+        correlationId,
+      );
+    }
   }
 
   const formData = await request.formData().catch(() => null);
@@ -106,6 +152,7 @@ export async function POST(request: NextRequest) {
   });
 
   if (!uploadParsed.success) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "validation_error" } });
     return withCorrelationHeader(
       NextResponse.json(
         errorResponse("VALIDATION_ERROR", "Arquivo de lote invalido.", correlationId, {
@@ -120,6 +167,7 @@ export async function POST(request: NextRequest) {
   const validation = await validateBatchImportFile(uploadParsed.data.file);
 
   if (!validation.is_valid) {
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "file_validation", issues: validation.summary.issues } });
     await writeBatchImportAudit(
       {
         tenantId: session.tenantId,
@@ -159,6 +207,8 @@ export async function POST(request: NextRequest) {
     },
     db,
   );
+
+  await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.import", resourceType: "batches", status: "success", details: { batch_id: batch.batchId } });
 
   return withCorrelationHeader(
     NextResponse.json(

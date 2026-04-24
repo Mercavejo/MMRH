@@ -1,0 +1,99 @@
+﻿
+# generated: 2026-04-08T16:56:17.8049290-03:00
+# last_updated: 2026-04-22T22:27:55-03:00
+# project: SISTEMA ADALTO
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+last_updated: 2026-04-24T12:00:00-03:00
+project: SISTEMA ADALTO
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  epic-1: done
+  1-1-set-up-initial-project-from-starter-template: done
+  1-2-autenticacao-com-sessao-segura-e-criptografia: done
+  1-3-autorizacao-rbac-por-perfil-e-escopo-de-tenant: done
+  1-4-politicas-de-privacidade-retencao-e-conformidade-lgpd: done
+  epic-1-retrospective: done
+
+  epic-2: done
+  2-1-lista-de-documentos-com-filtros-e-estados-claros: done
+  2-2-download-seguro-de-holerite-e-cartao-de-ponto: done
+  2-3-contestacao-guiada-para-documento-ausente: done
+  2-4-notificacao-de-atualizacao-ao-colaborador: done
+  epic-2-retrospective: done
+
+  epic-3: done
+  3-1-importacao-de-relatorio-e-validacao-inicial: done
+  3-2-roteamento-automatico-com-bloqueio-de-ambiguidade: done
+  3-3-fila-de-excecoes-e-acao-corretiva: done
+  3-4-reprocessamento-seletivo-de-itens-e-lotes: done
+  3-5-publicacao-segura-de-lote-no-portal: done
+  3-6-processamento-de-relatorio-geral-pdf-multipagina: done
+  epic-3-retrospective: done
+
+  epic-4: in-progress
+  4-1-trilha-de-auditoria-unificada-por-evento: done
+  4-2-dashboard-de-indicadores-e-status-operacional: backlog
+  4-3-alertas-operacionais-e-escalonamento: backlog
+  4-4-fluxo-de-suporte-e-consolidacao-de-chamados: backlog
+  epic-4-retrospective: done
+
+  epic-5: done
+  5-1-ingestao-externa-com-monitoramento-operacional: done
+  5-2-validacao-de-contrato-versionado: done
+  5-3-mapeamento-de-identificadores-entre-origem-e-tenant: done
+  5-4-publicacao-de-eventos-para-consumidores-externos: done
+  epic-5-retrospective: done
+
+  epic-6: done
+  6-1-cadastro-e-atribuicao-de-plano-por-tenant: done
+  6-2-enforcement-de-capacidades-por-plano: done
+  6-3-telemetria-de-uso-por-capacidade: done
+  epic-6-retrospective: done
+
+  epic-7: done
+  ws3-baseline-performance: done
+  ws4-readiness-playtesting: done
+
+  epic-8: in-progress
+  8-1-dashboard-rh-com-dados-reais-e-visual-premium: backlog
+  8-2-auditoria-com-ux-premium-design-system: done
+  8-3-ux-premium-upload-processamento-lotes: done
+  8-4-polish-visual-global-micro-interacoes: done
+  8-5-seed-data-fluxo-demo-playtesting: done
+  epic-8-retrospective: done
+

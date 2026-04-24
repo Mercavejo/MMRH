@@ -1,8 +1,51 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import type { HTMLAttributes, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { BatchImportPageView, buildBatchImportFormData } from "@/app/(rh)/lotes/page";
-import { BatchProgressPanel } from "@/app/(rh)/lotes/batch-progress-panel";
+import { BatchImportPageView, buildBatchImportFormData } from "@/app/rh/lotes/page";
+import { BatchProgressPanel } from "@/components/batches/batch-progress-panel";
 import { buildPendingBatchRoutingProgress } from "@/lib/rh/batches/batch-progress";
+
+type MockMotionDivProps = HTMLAttributes<HTMLDivElement> & {
+  alignItems?: unknown;
+  animate?: unknown;
+  exit?: unknown;
+  initial?: unknown;
+  layout?: unknown;
+  transition?: unknown;
+  whileHover?: unknown;
+};
+
+function MockMotionDiv({ children, ...props }: MockMotionDivProps) {
+  delete props.alignItems;
+  delete props.animate;
+  delete props.exit;
+  delete props.initial;
+  delete props.layout;
+  delete props.transition;
+  delete props.whileHover;
+
+  return <div {...props}>{children}</div>;
+}
+
+vi.mock("framer-motion", () => ({
+  motion: {
+    div: MockMotionDiv,
+  },
+  AnimatePresence: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
+
+vi.mock("canvas-confetti", () => ({
+  default: vi.fn(),
+}));
+
+vi.mock("react-dropzone", () => ({
+  useDropzone: () => ({
+    getRootProps: () => ({}),
+    getInputProps: () => ({}),
+    isDragActive: false,
+    fileRejections: [],
+  }),
+}));
 
 describe("rh batch import ui", () => {
   it("builds a form payload with the selected file", () => {
@@ -18,7 +61,7 @@ describe("rh batch import ui", () => {
   it("renders loading state while submitting", () => {
     const html = renderToStaticMarkup(
       <BatchImportPageView
-        selectedFileName={"lote-rh.csv"}
+        selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
         feedback={{ state: "submitting" }}
         isSubmitDisabled={true}
         onFileChange={vi.fn()}
@@ -33,7 +76,7 @@ describe("rh batch import ui", () => {
   it("renders inline success and error feedback", () => {
     const successHtml = renderToStaticMarkup(
       <BatchImportPageView
-        selectedFileName={"lote-rh.csv"}
+        selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
         feedback={{
           state: "success",
           message: "Lote validado com sucesso.",
@@ -56,7 +99,7 @@ describe("rh batch import ui", () => {
 
     const errorHtml = renderToStaticMarkup(
       <BatchImportPageView
-        selectedFileName={null}
+        selectedFile={null}
         feedback={{
           state: "error",
           message: "O relatorio geral nao passou na validacao inicial.",
@@ -96,10 +139,10 @@ describe("rh batch import ui", () => {
       />,
     );
 
-    expect(html).toContain("Progresso do lote");
-    expect(html).toContain("Processados: 0");
-    expect(html).toContain("Pendentes: 3");
-    expect(html).toContain("Iniciar roteamento");
+    expect(html).toContain("Progresso da Etapa");
+    expect(html).toContain("Sucesso: 0");
+    expect(html).toContain("Pendente: 3");
+    expect(html).toContain("Iniciar Roteamento");
   });
 
   it("renders publish action and success state", () => {
@@ -112,8 +155,11 @@ describe("rh batch import ui", () => {
             totalDocuments: 2,
           }),
           routing_status: "completed",
+          matched_documents: 2,
+          pending_documents: 0,
           publication_status: "published",
           publication_attempts: 1,
+          processed_at: "2026-04-13T12:04:30.000Z",
           published_at: "2026-04-13T12:05:00.000Z",
           published_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           last_publication_correlation_id: "11111111-1111-4111-8111-111111111111",
@@ -126,9 +172,11 @@ describe("rh batch import ui", () => {
       />,
     );
 
-    expect(html).toContain("Publicar lote");
-    expect(html).toContain("Lote publicado com sucesso.");
-    expect(html).toContain("Publicacao: publicado");
+    expect(html).toContain("Publicar Lote");
+    expect(html).toContain("Lote publicado com sucesso");
+    expect(html).toContain("Documentos publicados: 2");
+    expect(html).toContain("Tempo total: 30s");
+    expect(html).toContain("Consulte o historico do lote");
   });
 
   it("renders blocked routing guidance", () => {
@@ -154,7 +202,7 @@ describe("rh batch import ui", () => {
     );
 
     expect(html).toContain("bloqueado por ambiguidade");
-    expect(html).toContain("Ambiguidades: 1");
+    expect(html).toContain("Ambiguidade: 1");
     expect(html).toContain("Roteamento concluido com bloqueios por ambiguidade.");
   });
 });

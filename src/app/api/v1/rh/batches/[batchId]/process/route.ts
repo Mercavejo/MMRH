@@ -141,11 +141,11 @@ export async function POST(
     );
   }
 
-  if (role !== "rh_operator") {
+  if (!["rh_operator", "rh_gestor", "admin_plataforma"].includes(role)) {
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",
-        "Somente RH operador pode executar o roteamento do lote.",
+        "Somente operador, gestor cliente ou admin Mercavejo pode executar o roteamento do lote.",
         correlationId,
       ),
       correlationId,
@@ -382,7 +382,7 @@ export async function GET(
     );
   }
 
-  if (role !== "rh_operator" && role !== "rh_gestor") {
+  if (!["rh_operator", "rh_gestor", "admin_plataforma"].includes(role)) {
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",

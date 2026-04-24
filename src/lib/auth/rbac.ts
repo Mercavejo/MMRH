@@ -49,7 +49,7 @@ const ROLE_PERMISSIONS: Record<RbacRole, readonly RbacAction[]> = {
     RBAC_ACTIONS.tenantWrite,
     RBAC_ACTIONS.accessManage,
   ],
-  rh_gestor: [RBAC_ACTIONS.tenantRead, RBAC_ACTIONS.auditRead],
+  rh_gestor: [RBAC_ACTIONS.tenantRead, RBAC_ACTIONS.tenantWrite],
   suporte: [RBAC_ACTIONS.tenantRead, RBAC_ACTIONS.supportDiagnose],
   admin_plataforma: [
     RBAC_ACTIONS.tenantRead,

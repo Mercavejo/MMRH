@@ -61,7 +61,7 @@ describe("audit events api", () => {
       tenantId: SESSION_TENANT_ID,
     });
 
-    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
+    dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
 
     listAuditEventsMock.mockResolvedValue({
       events: [

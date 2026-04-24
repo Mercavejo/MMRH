@@ -123,9 +123,9 @@ export async function POST(
     );
   }
 
-  if (role !== "rh_operator") {
+  if (!["rh_operator", "rh_gestor", "admin_plataforma"].includes(role)) {
     return jsonResponse(
-      errorResponse("FORBIDDEN", "Somente RH operador pode publicar lote.", correlationId),
+      errorResponse("FORBIDDEN", "Somente operador, gestor cliente ou admin Mercavejo pode publicar lote.", correlationId),
       correlationId,
       { status: 403 },
     );
