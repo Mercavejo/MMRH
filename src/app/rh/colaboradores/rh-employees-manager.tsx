@@ -263,7 +263,7 @@ export function RhEmployeesManager({
                   </TableCell>
                   <TableCell>{item.user_id ? "Ja ativado" : "Pendente de ativacao"}</TableCell>
                   <TableCell align="right">
-                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                    <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
                       <Button size="small" onClick={() => loadEmployee(item)}>
                         Editar
                       </Button>
