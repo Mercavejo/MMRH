@@ -5,6 +5,11 @@ import {
   Alert,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   MenuItem,
   Paper,
   Stack,
@@ -49,6 +54,7 @@ export function RhEmployeesManager({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
+  const [deletingEmployee, setDeletingEmployee] = useState<EmployeeIdentityListItem | null>(null);
 
   function resetEditor() {
     setEditingEmployeeId(null);
@@ -111,6 +117,41 @@ export function RhEmployeesManager({
         resetEditor();
       } catch {
         setErrorMessage("Falha operacional ao salvar colaborador.");
+      } finally {
+        setIsPending(false);
+      }
+    });
+  }
+
+  function handleDelete(item: EmployeeIdentityListItem) {
+    setDeletingEmployee(item);
+  }
+
+  function confirmDelete() {
+    if (!deletingEmployee) return;
+    setIsPending(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    startTransition(async () => {
+      try {
+        const response = await fetch(`/api/v1/rh/employees/${deletingEmployee.employee_id}`, {
+          method: "DELETE",
+        });
+
+        const body = await response.json();
+        if (!response.ok) {
+          setErrorMessage(body?.error?.message ?? "Falha ao remover colaborador.");
+          setIsPending(false);
+          setDeletingEmployee(null);
+          return;
+        }
+
+        setItems((current) => current.filter((item) => item.employee_id !== deletingEmployee.employee_id));
+        setSuccessMessage("Colaborador removido com sucesso.");
+        setDeletingEmployee(null);
+      } catch {
+        setErrorMessage("Falha ao remover colaborador.");
       } finally {
         setIsPending(false);
       }
@@ -222,9 +263,14 @@ export function RhEmployeesManager({
                   </TableCell>
                   <TableCell>{item.user_id ? "Ja ativado" : "Pendente de ativacao"}</TableCell>
                   <TableCell align="right">
-                    <Button size="small" onClick={() => loadEmployee(item)}>
-                      Editar
-                    </Button>
+                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                      <Button size="small" onClick={() => loadEmployee(item)}>
+                        Editar
+                      </Button>
+                      <Button size="small" color="error" onClick={() => handleDelete(item)} disabled={!!item.user_id}>
+                        Remover
+                      </Button>
+                    </Stack>
                   </TableCell>
                 </TableRow>
               ))}
@@ -241,6 +287,24 @@ export function RhEmployeesManager({
           </Table>
         </Stack>
       </Paper>
+
+      <Dialog open={!!deletingEmployee} onClose={() => setDeletingEmployee(null)}>
+        <DialogTitle>Remover colaborador</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Deseja realmente remover o colaborador <strong>{deletingEmployee?.employee_name}</strong>?
+            Esta acao nao pode ser desfeita. Colaboradores ja ativados nao podem ser removidos.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeletingEmployee(null)} disabled={isPending}>
+            Cancelar
+          </Button>
+          <Button onClick={confirmDelete} color="error" variant="contained" disabled={isPending}>
+            Remover
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

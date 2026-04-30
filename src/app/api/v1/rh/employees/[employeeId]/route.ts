@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { errorResponse, successResponse } from "@/lib/api/response";
 import { EmployeeIdentityServiceError } from "@/modules/employee-identity/application/employee-identity-service-error";
+import { deleteEmployeeIdentity } from "@/modules/employee-identity/application/delete-employee-identity";
 import { updateEmployeeIdentity } from "@/modules/employee-identity/application/update-employee-identity";
 import {
   resolveRhEmployeeContext,
@@ -96,6 +97,73 @@ export async function PATCH(
         errorResponse(
           "INTERNAL_SERVER_ERROR",
           "Falha ao atualizar colaborador funcional.",
+          context.correlationId,
+        ),
+        { status: 500 },
+      ),
+      context.correlationId,
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ employeeId: string }> },
+) {
+  const context = await resolveRhEmployeeContext(request);
+  if (!context.ok) {
+    return context.response;
+  }
+
+  const { employeeId } = await params;
+
+  try {
+    const result = await deleteEmployeeIdentity({
+      employeeId,
+      tenantId: context.session.tenantId,
+      actorId: context.session.userId,
+    });
+
+    await writeEmployeeIdentityAuditSafely({
+      tenantId: context.session.tenantId,
+      actorId: context.session.userId,
+      correlationId: context.correlationId,
+      action: "rh.employee_identity.deleted.v1",
+      resourceId: employeeId,
+      status: "success",
+      details: {},
+    });
+
+    return withCorrelationHeader(
+      NextResponse.json(successResponse(result, context.correlationId, context.session.tenantId)),
+      context.correlationId,
+    );
+  } catch (error) {
+    if (error instanceof EmployeeIdentityServiceError) {
+      await writeEmployeeIdentityAuditSafely({
+        tenantId: context.session.tenantId,
+        actorId: context.session.userId,
+        correlationId: context.correlationId,
+        action: "rh.employee_identity.delete.rejected.v1",
+        resourceId: employeeId,
+        status: "failure",
+        details: error.details,
+      });
+
+      return withCorrelationHeader(
+        NextResponse.json(
+          errorResponse(error.code, error.message, context.correlationId, error.details),
+          { status: error.statusCode },
+        ),
+        context.correlationId,
+      );
+    }
+
+    return withCorrelationHeader(
+      NextResponse.json(
+        errorResponse(
+          "INTERNAL_SERVER_ERROR",
+          "Falha ao remover colaborador funcional.",
           context.correlationId,
         ),
         { status: 500 },

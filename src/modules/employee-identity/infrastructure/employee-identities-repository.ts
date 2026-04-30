@@ -24,6 +24,7 @@ export class EmployeeIdentityRepositoryError extends Error {
       | "DUPLICATE_REFERENCE_CODE"
       | "NOT_FOUND"
       | "FORBIDDEN"
+      | "ALREADY_ACTIVATED"
       | "INTERNAL_ERROR",
     message: string,
     public readonly details?: Record<string, unknown>,
@@ -305,7 +306,58 @@ export async function updateEmployeeIdentityRecord(
   return mapRecord(rows[0]);
 }
 
-export async function findEmployeeIdentityForActivationInDb(
+export async function deleteEmployeeIdentityRecord(
+  input: {
+    employeeId: string;
+    tenantId: string;
+  },
+  dbClient: DbLike = db,
+): Promise<void> {
+  const existingRows = await dbClient
+    .select({
+      id: employeeIdentities.id,
+      tenantId: employeeIdentities.tenantId,
+      userId: employeeIdentities.userId,
+      status: employeeIdentities.status,
+    })
+    .from(employeeIdentities)
+    .where(eq(employeeIdentities.id, input.employeeId))
+    .limit(1);
+
+  const existing = existingRows[0];
+  if (!existing) {
+    throw new EmployeeIdentityRepositoryError("NOT_FOUND", "Colaborador funcional nao encontrado.");
+  }
+
+  if (existing.tenantId !== input.tenantId) {
+    throw new EmployeeIdentityRepositoryError(
+      "FORBIDDEN",
+      "Acesso negado para colaborador funcional de outro tenant.",
+      {
+        employee_identity_id: input.employeeId,
+        owner_tenant_id: existing.tenantId,
+        actor_tenant_id: input.tenantId,
+      },
+    );
+  }
+
+  if (existing.userId) {
+    throw new EmployeeIdentityRepositoryError(
+      "ALREADY_ACTIVATED",
+      "Colaborador ja ativado nao pode ser removido. Desative o status primeiro.",
+      { employee_identity_id: input.employeeId, user_id: existing.userId },
+    );
+  }
+
+  await dbClient
+    .delete(employeeIdentities)
+    .where(
+      and(
+        eq(employeeIdentities.id, input.employeeId),
+        eq(employeeIdentities.tenantId, input.tenantId),
+      ),
+    );
+}
   input: {
     tenantId: string;
     referenceCode: string;
