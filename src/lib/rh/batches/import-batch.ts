@@ -85,7 +85,6 @@ export async function persistValidatedBatchImport(params: {
         sourceStorageKey,
         sourceStorageFilename: params.validation.original_filename,
         sourceStorageMimeType: params.validation.mime_type,
-        sourceContentBase64: params.sourceFileBuffer.toString("base64"),
         sourceFormat: params.validation.summary.source_format,
         organizationalUnit: resolveOrganizationalUnit(
           params.validation.summary as unknown as Record<string, unknown>,
@@ -102,39 +101,6 @@ export async function persistValidatedBatchImport(params: {
         routingBlockedReason: null,
         routingProcessedAt: null,
         correlationId: normalizeUuidOrRandom(params.correlationId),
-      }).catch(async (error: unknown) => {
-        const pgCode = (error as { code?: string }).code;
-        if (pgCode === "42703") {
-          await transaction.insert(batches).values({
-            id: batchId,
-            tenantId: params.tenantId,
-            uploadedBy: params.uploadedBy,
-            originalFilename: params.validation.original_filename,
-            fileSizeBytes: params.validation.file_size_bytes,
-            mimeType: params.validation.mime_type,
-            sourceStorageKey,
-            sourceStorageFilename: params.validation.original_filename,
-            sourceStorageMimeType: params.validation.mime_type,
-            sourceFormat: params.validation.summary.source_format,
-            organizationalUnit: resolveOrganizationalUnit(
-              params.validation.summary as unknown as Record<string, unknown>,
-            ),
-            validationStatus: params.validation.validation_status,
-            validationSummary: params.validation.summary,
-            routingStatus: "pending",
-            routingManifest,
-            routingTotalCount: routingManifest.length,
-            routingMatchedCount: 0,
-            routingPendingCount: routingManifest.length,
-            routingFailedCount: 0,
-            routingAmbiguousCount: 0,
-            routingBlockedReason: null,
-            routingProcessedAt: null,
-            correlationId: normalizeUuidOrRandom(params.correlationId),
-          });
-          return;
-        }
-        throw error;
       });
 
       await writeBatchImportAudit(

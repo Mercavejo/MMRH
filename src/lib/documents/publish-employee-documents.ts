@@ -168,7 +168,6 @@ export async function publishEmployeeDocumentsForBatch(
     fileName: string;
     mimeType: string;
     sourcePageIndex: number;
-    contentBase64: string;
     status: "published";
     updatedAt: Date;
   }> = [];
@@ -255,24 +254,13 @@ export async function publishEmployeeDocumentsForBatch(
         fileName,
         mimeType: "application/pdf",
         sourcePageIndex: item.page_index,
-        contentBase64: fileBuffer.toString("base64"),
         status: "published",
         updatedAt: new Date(),
       });
     }
 
     if (values.length > 0) {
-      try {
-        await dbClient.insert(employeeDocuments).values(values);
-      } catch (insertError: unknown) {
-        const pgCode = (insertError as { code?: string }).code;
-        if (pgCode === "42703") {
-          const legacyValues = values.map(({ contentBase64: _, ...rest }) => rest);
-          await dbClient.insert(employeeDocuments).values(legacyValues);
-        } else {
-          throw insertError;
-        }
-      }
+      await dbClient.insert(employeeDocuments).values(values);
     }
   } catch (error) {
     await Promise.all(createdStorageKeys.map((storageKey) => deleteDocumentArtifact(storageKey).catch(() => undefined)));
