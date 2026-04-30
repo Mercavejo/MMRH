@@ -33,6 +33,7 @@ import {
   Logout as LogoutIcon,
   SwitchAccount as SwitchIcon,
   Group as GroupIcon,
+  People as PeopleIcon,
   Receipt as ReceiptIcon,
   Error as ErrorIcon,
   Analytics as AnalyticsIcon,
@@ -59,6 +60,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', icon: <DashboardIcon />, path: '/rh', role: 'rh', allowedTenantRoles: ['rh_gestor', 'rh_operator', 'suporte', 'admin_plataforma', 'rh'] },
   { label: 'Indicadores RH', icon: <AnalyticsIcon />, path: '/rh/indicadores', role: 'rh', allowedTenantRoles: ['admin_plataforma', 'rh'] },
   { label: 'Processamento de Lotes', icon: <ReceiptIcon />, path: '/rh/lotes', role: 'rh', allowedTenantRoles: ['rh_gestor', 'rh_operator', 'admin_plataforma', 'rh'] },
+  { label: 'Colaboradores', icon: <PeopleIcon />, path: '/rh/colaboradores', role: 'rh', allowedTenantRoles: ['rh_gestor', 'rh_operator', 'admin_plataforma', 'rh'] },
+  { label: 'Integrações', icon: <SettingsIcon />, path: '/rh/integracoes', role: 'rh', allowedTenantRoles: ['rh_gestor', 'rh_operator', 'admin_plataforma', 'rh'] },
   { label: 'Fila de Exceções', icon: <ErrorIcon />, path: '/rh/excecoes', role: 'rh', allowedTenantRoles: ['admin_plataforma', 'rh'] },
   { label: 'Auditoria', icon: <GroupIcon />, path: '/rh/auditoria', role: 'rh', allowedTenantRoles: ['suporte', 'admin_plataforma', 'rh'] },
 ];
