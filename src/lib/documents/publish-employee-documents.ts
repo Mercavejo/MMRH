@@ -262,7 +262,17 @@ export async function publishEmployeeDocumentsForBatch(
     }
 
     if (values.length > 0) {
-      await dbClient.insert(employeeDocuments).values(values);
+      try {
+        await dbClient.insert(employeeDocuments).values(values);
+      } catch (insertError: unknown) {
+        const pgCode = (insertError as { code?: string }).code;
+        if (pgCode === "42703") {
+          const legacyValues = values.map(({ contentBase64: _, ...rest }) => rest);
+          await dbClient.insert(employeeDocuments).values(legacyValues);
+        } else {
+          throw insertError;
+        }
+      }
     }
   } catch (error) {
     await Promise.all(createdStorageKeys.map((storageKey) => deleteDocumentArtifact(storageKey).catch(() => undefined)));
