@@ -333,6 +333,24 @@ export async function handleEmployeeDocumentDownload(
         });
       } catch (error) {
         if (error instanceof DocumentStorageError) {
+          if (document.content_base64) {
+            try {
+              const dbBuffer = Buffer.from(document.content_base64, "base64");
+              return new NextResponse(new Uint8Array(dbBuffer), {
+                status: 200,
+                headers: {
+                  "content-type": document.mime_type,
+                  "content-length": String(dbBuffer.byteLength),
+                  "cache-control": "no-store",
+                  "content-disposition": `${disposition}; filename="${document.file_name}"`,
+                  [CORRELATION_ID_HEADER]: correlationId,
+                },
+              });
+            } catch {
+              // fall through to error
+            }
+          }
+
           await writeDocumentDownloadAuditFn({
             tenantId,
             actorId: session.userId,

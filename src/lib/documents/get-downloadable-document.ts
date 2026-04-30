@@ -38,6 +38,7 @@ export type DownloadableDocumentMetadata = {
   mime_type: string;
   file_name: string;
   storage_key: string;
+  content_base64: string | null;
 };
 
 export class DownloadEligibilityError extends Error {
@@ -82,6 +83,7 @@ export async function getDownloadableDocument(
       storageKey: employeeDocuments.storageKey,
       fileName: employeeDocuments.fileName,
       mimeType: employeeDocuments.mimeType,
+      contentBase64: employeeDocuments.contentBase64,
     })
     .from(employeeDocuments)
     .where(
@@ -123,5 +125,6 @@ export async function getDownloadableDocument(
     file_name:
       record.fileName ?? resolveDownloadFileName(record.documentType, record.periodRef),
     storage_key: record.storageKey,
+    content_base64: record.contentBase64 ?? null,
   };
 }

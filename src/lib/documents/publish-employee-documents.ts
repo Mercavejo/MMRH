@@ -164,6 +164,7 @@ export async function publishEmployeeDocumentsForBatch(
     fileName: string;
     mimeType: string;
     sourcePageIndex: number;
+    contentBase64: string;
     status: "published";
     updatedAt: Date;
   }> = [];
@@ -250,6 +251,7 @@ export async function publishEmployeeDocumentsForBatch(
         fileName,
         mimeType: "application/pdf",
         sourcePageIndex: item.page_index,
+        contentBase64: fileBuffer.toString("base64"),
         status: "published",
         updatedAt: new Date(),
       });

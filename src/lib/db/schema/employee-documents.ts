@@ -27,6 +27,7 @@ export const employeeDocuments = pgTable("employee_documents", {
   fileName: text("file_name"),
   mimeType: text("mime_type"),
   sourcePageIndex: integer("source_page_index"),
+  contentBase64: text("content_base64"),
   status: documentStatusEnum("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
