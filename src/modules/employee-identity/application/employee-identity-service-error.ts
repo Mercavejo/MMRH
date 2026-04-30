@@ -5,6 +5,7 @@ export class EmployeeIdentityServiceError extends Error {
       | "DUPLICATE_REFERENCE_CODE"
       | "NOT_FOUND"
       | "FORBIDDEN"
+      | "ALREADY_ACTIVATED"
       | "CONFLICT"
       | "INTERNAL_SERVER_ERROR",
     message: string,
