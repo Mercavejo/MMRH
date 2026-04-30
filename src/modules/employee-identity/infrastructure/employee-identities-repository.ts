@@ -358,6 +358,8 @@ export async function deleteEmployeeIdentityRecord(
       ),
     );
 }
+
+export async function findEmployeeIdentityForActivationInDb(
   input: {
     tenantId: string;
     referenceCode: string;
