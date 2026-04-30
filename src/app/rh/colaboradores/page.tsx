@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { Alert, Container, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Container, Paper, Stack, Typography, Chip, IconButton, Tooltip } from "@mui/material";
+import { Alert, Container, Paper, Stack, Typography, Chip } from "@mui/material";
+import { cookies } from "next/headers";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
 import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
@@ -28,6 +30,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Sessao ausente.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 
@@ -37,6 +40,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Sessao invalida ou expirada.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 
@@ -46,6 +50,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Usuario sem permissao no tenant.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 
@@ -61,6 +66,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Acesso negado pelo RBAC.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 
@@ -69,6 +75,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Perfil sem permissao para gerir colaboradores.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 
@@ -82,6 +89,7 @@ async function loadEmployeesPageState() {
       canManage: true,
       errorMessage: null,
       items: data.items,
+      tenantId: session.tenantId,
     };
   } catch {
     return {
@@ -96,10 +104,12 @@ export function RhEmployeesPageView({
   canManage,
   errorMessage,
   initialItems,
+  tenantId,
 }: {
   canManage: boolean;
   errorMessage: string | null;
   initialItems: EmployeeIdentityListItem[];
+  tenantId: string | null;
 }) {
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
@@ -113,14 +123,24 @@ export function RhEmployeesPageView({
             background: `linear-gradient(135deg, ${tokens.colors.surface.card} 0%, #edf4fb 100%)`,
           }}
         >
-          <Stack spacing={1}>
-            <Typography variant="overline" sx={{ letterSpacing: 1.4 }}>
-              Operacao RH / Colaboradores
-            </Typography>
-            <Typography variant="h2">Cadastro de colaboradores</Typography>
-            <Typography variant="body1" color="text.secondary">
-              Cadastre nome, Codigo de referencia, Verificador secundario e status funcional para preparar a ativacao segura.
-            </Typography>
+          <Stack spacing={2}>
+            <Stack spacing={1}>
+              <Typography variant="overline" sx={{ letterSpacing: 1.4 }}>
+                Operacao RH / Colaboradores
+              </Typography>
+              <Typography variant="h2">Cadastro de colaboradores</Typography>
+              <Typography variant="body1" color="text.secondary">
+                Cadastre nome, Codigo de referencia, Verificador secundario e status funcional para preparar a ativacao segura.
+              </Typography>
+            </Stack>
+            {tenantId && (
+              <Chip
+                label={`Codigo da empresa: ${tenantId}`}
+                variant="outlined"
+                size="small"
+                sx={{ fontFamily: "monospace", alignSelf: "flex-start" }}
+              />
+            )}
           </Stack>
         </Paper>
 
@@ -139,6 +159,7 @@ export default async function RhEmployeesPage() {
       canManage={state.canManage}
       errorMessage={state.errorMessage}
       initialItems={state.items}
+      tenantId={state.tenantId}
     />
   );
 }
