@@ -1,5 +1,4 @@
 import { Box, Container, Typography, Stack, Link as MuiLink } from "@mui/material";
-import NextLink from "next/link";
 import { LoginForm } from "@/modules/auth/components/LoginForm";
 import { tokens } from "@/lib/theme/tokens";
 
@@ -20,7 +19,7 @@ export default function LoginPage() {
           <LoginForm />
           <Typography variant="body2" color="rgba(255,255,255,0.7)">
             Primeiro acesso?{" "}
-            <MuiLink component={NextLink} href="/primeiro-acesso" sx={{ color: "white", textDecoration: "underline" }}>
+            <MuiLink href="/primeiro-acesso" sx={{ color: "white", textDecoration: "underline" }}>
               Ativar conta
             </MuiLink>
           </Typography>
