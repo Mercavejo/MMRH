@@ -75,6 +75,9 @@ function buildDownloadSignature(params: {
 function getDownloadSigningSecret(): string {
   const secret = process.env.DOWNLOAD_SIGNING_SECRET;
   if (!secret) {
+    if (process.env.VERCEL_ENV === "preview" || process.env.NODE_ENV !== "production") {
+      return "demo-download-signing-secret-adalto-2026";
+    }
     throw new Error("DOWNLOAD_SIGNING_SECRET_MISSING");
   }
 
