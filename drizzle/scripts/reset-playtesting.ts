@@ -9,10 +9,38 @@ const DEMO_EMAILS = ["admin@demo.com", "gestor@demo.com", "colaborador@demo.com"
 
 async function main() {
   const { db }   = await import("../../src/lib/db/client");
-  const { tenants, users, userTenantMappings, batches, employeeDocuments, auditLogs } =
+  const { sql } = await import("drizzle-orm");
+  const { tenants, users, userTenantMappings, batches, employeeDocuments, employeeIdentities, auditLogs } =
     await import("../../src/lib/db/schema");
 
   console.log("🧹 Iniciando reset de playtesting...");
+
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'employee_identity_status') THEN
+        CREATE TYPE "public"."employee_identity_status" AS ENUM ('pending_activation', 'active', 'blocked', 'inactive');
+      END IF;
+    END $$;
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "employee_identities" (
+      "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      "tenant_id" uuid NOT NULL REFERENCES "public"."tenants"("id") ON DELETE restrict,
+      "user_id" uuid REFERENCES "public"."users"("id") ON DELETE set null,
+      "reference_code" text NOT NULL,
+      "employee_name" text NOT NULL,
+      "admission_date" text NOT NULL,
+      "status" "public"."employee_identity_status" NOT NULL DEFAULT 'pending_activation',
+      "notes" text,
+      "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+      "updated_at" timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS "employee_identities_tenant_reference_unique"
+    ON "employee_identities" ("tenant_id", "reference_code")
+  `);
 
   // ── 1. Descobrir tenant demo ───────────────────────────────────────────────
   const [demoTenant] = await db
@@ -32,6 +60,9 @@ async function main() {
 
     await db.delete(employeeDocuments)
       .where(eq(employeeDocuments.tenantId, tenantId));
+
+    await db.delete(employeeIdentities)
+      .where(eq(employeeIdentities.tenantId, tenantId));
 
     await db.delete(batches)
       .where(eq(batches.tenantId, tenantId));

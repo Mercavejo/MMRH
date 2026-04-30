@@ -369,6 +369,42 @@ So that eu saiba quando retornar ao portal para concluir a acao.
 **Then** deve haver registro rastreavel por data e contexto
 **And** o texto deve ser simples, sem jargao tecnico e com consistencia visual do produto.
 
+### Story 2.5: Vinculo Seguro do Colaborador por Codigo de Referencia
+
+As a colaborador em primeiro acesso,
+I want confirmar meu codigo de referencia para ativar meu acesso,
+So that meus documentos sejam associados ao meu perfil correto com seguranca.
+
+**Acceptance Criteria:**
+
+**Given** um colaborador pre-cadastrado no tenant com codigo de referencia oficial
+**When** ele realizar o primeiro acesso e informar esse codigo junto com um verificador secundario valido
+**Then** o sistema deve ativar o vinculo do usuario ao registro correto
+**And** registrar trilha auditavel da ativacao.
+
+**Given** um codigo inexistente, divergente ou ambiguo
+**When** o colaborador tentar concluir a ativacao
+**Then** o sistema deve bloquear o vinculo
+**And** nao pode liberar acesso ao portal nem inferir associacao parcial.
+
+### Story 2.6: Cadastro de Colaboradores pelo Gestor RH com Codigo de Referencia
+
+As a gestor RH,
+I want cadastrar colaboradores no sistema com nome e codigo de referencia oficial,
+So that o portal e a distribuicao de documentos comecem com vinculos corretos desde a origem.
+
+**Acceptance Criteria:**
+
+**Given** um gestor RH autenticado no tenant
+**When** ele cadastrar um colaborador com nome e codigo de referencia
+**Then** o sistema deve criar uma identidade funcional tenant-bound em estado pendente de ativacao
+**And** validar unicidade do codigo dentro do tenant.
+
+**Given** um cadastro ja existente com o mesmo codigo ou dados conflitantes
+**When** o gestor tentar salvar
+**Then** o sistema deve bloquear a operacao
+**And** exibir erro operacional claro sem duplicar registro.
+
 ## Epic 3: Operacao RH de Lotes e Publicacao
 
 Capacitar o RH a processar lotes mensais com validacao forte, tratamento de excecoes e publicacao confiavel em escala.

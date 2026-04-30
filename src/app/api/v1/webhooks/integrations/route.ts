@@ -7,6 +7,7 @@ import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
+import { buildCapabilityForbiddenDetails, ErrorCode } from "@/lib/api/errors";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
 import { isTimestampWithinSkew, isValidHmacSignature, signHmacSha256Hex } from "@/lib/security/hmac-signature";
 import { listExternalIngestions, ExternalIngestionError } from "@/modules/integrations/application/list-external-ingestions";
@@ -18,6 +19,8 @@ import {
   type AuthorizedExternalSource,
   validateExternalIngestionContract,
 } from "@/modules/integrations/domain/external-ingestion";
+import { enforceCapability } from "@/modules/plans/application/enforce-capability";
+import { CapabilityForbiddenError, Capability } from "@/modules/plans/domain/capabilities";
 
 const intakeSchema = z.object({
   tenant_id: z.string().uuid(),
@@ -236,6 +239,33 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    await enforceCapability(parsedBody.data.tenant_id, Capability.EXTERNAL_INTEGRATIONS, null, correlationId);
+  } catch (capabilityError) {
+    if (capabilityError instanceof CapabilityForbiddenError) {
+      return jsonResponse(
+        errorResponse(
+          ErrorCode.CapabilityForbidden,
+          "Esta funcionalidade nao esta disponivel no plano atual.",
+          correlationId,
+          buildCapabilityForbiddenDetails({
+            capability: capabilityError.capability,
+            planCode: capabilityError.planCode,
+            correlationId,
+            upgradeHint: capabilityError.upgradeHint,
+          }),
+        ),
+        correlationId,
+        { status: 403 },
+      );
+    }
+    return jsonResponse(
+      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao validar capacidade do plano atual.", correlationId),
+      correlationId,
+      { status: 500 },
+    );
+  }
+
+  try {
     const mapping = await resolveExternalIdentifierMappingForIntake({
       tenantId: parsedBody.data.tenant_id,
       sourceSystem,
@@ -258,8 +288,8 @@ export async function POST(request: NextRequest) {
         idempotencyKey: parsedBody.data.idempotency_key,
         payloadSummary: parsedBody.data.payload_summary,
         externalIdentifier: mapping.external_identifier,
-        mappedEmployeeId: null,
-        mappingVersion: null,
+        mappedEmployeeId: undefined,
+        mappingVersion: undefined,
         mappingStatus: mapping.status,
         failureCode: mappingFailureCode,
         recommendedAction: mapping.recommended_action,
@@ -288,8 +318,8 @@ export async function POST(request: NextRequest) {
       idempotencyKey: parsedBody.data.idempotency_key,
       payloadSummary: parsedBody.data.payload_summary,
       externalIdentifier: mapping.external_identifier,
-      mappedEmployeeId: mapping.mapped_employee_id,
-      mappingVersion: mapping.mapping_version,
+      mappedEmployeeId: mapping.mapped_employee_id ?? undefined,
+      mappingVersion: mapping.mapping_version ?? undefined,
       mappingStatus: mapping.status,
       failureCode: null,
       recommendedAction: null,

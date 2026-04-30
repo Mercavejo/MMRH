@@ -185,6 +185,30 @@ export async function getActiveTenantPlanInDb(tenantId: string, dbClient: DbLike
   return row ? mapActiveTenantPlanRow(row) : null;
 }
 
+export async function listTenantPlanHistoryInDb(tenantId: string, dbClient: DbLike = db): Promise<ActiveTenantPlan[]> {
+  const rows = await dbClient
+    .select({
+      assignmentId: tenantPlanAssignmentHistory.assignmentId,
+      tenantId: tenantPlanAssignmentHistory.tenantId,
+      planId: tenantPlanAssignmentHistory.planId,
+      planCode: plans.planCode,
+      displayName: plans.displayName,
+      description: plans.description,
+      effectiveFrom: tenantPlanAssignmentHistory.effectiveFrom,
+      effectiveTo: tenantPlanAssignmentHistory.effectiveTo,
+      changedBy: tenantPlanAssignmentHistory.changedBy,
+      changedAt: tenantPlanAssignmentHistory.changedAt,
+      correlationId: tenantPlanAssignmentHistory.correlationId,
+      changeReason: tenantPlanAssignmentHistory.changeReason,
+    })
+    .from(tenantPlanAssignmentHistory)
+    .innerJoin(plans, eq(plans.id, tenantPlanAssignmentHistory.planId))
+    .where(eq(tenantPlanAssignmentHistory.tenantId, tenantId))
+    .orderBy(asc(tenantPlanAssignmentHistory.changedAt));
+
+  return rows.map(mapActiveTenantPlanRow);
+}
+
 export async function assignTenantPlanInDb(input: {
   tenantId: string;
   planId: string;
@@ -194,7 +218,7 @@ export async function assignTenantPlanInDb(input: {
   changeReason: string | null;
 }, dbClient: DbLike = db): Promise<{ active_plan: ActiveTenantPlan; mode: "create" | "switch" | "noop" }> {
   return dbClient.transaction(async (tx) => {
-    const current = await getActiveTenantPlanInDb(input.tenantId, tx as DbLike);
+    const current = await getActiveTenantPlanInDb(input.tenantId, tx as unknown as DbLike);
 
     if (current && current.plan_id === input.planId) {
       return {
@@ -206,6 +230,19 @@ export async function assignTenantPlanInDb(input: {
     const now = new Date();
 
     if (current) {
+      await tx.insert(tenantPlanAssignmentHistory).values({
+        assignmentId: current.assignment_id,
+        tenantId: current.tenant_id,
+        planId: current.plan_id,
+        effectiveFrom: new Date(current.effective_from),
+        effectiveTo: input.effectiveFrom,
+        changedBy: input.actorId,
+        changedAt: now,
+        correlationId: input.correlationId,
+        changeReason: current.change_reason,
+        createdAt: now,
+      });
+
       await tx
         .update(tenantPlanAssignments)
         .set({
@@ -273,7 +310,7 @@ export async function assignTenantPlanInDb(input: {
       },
     });
 
-    const active = await getActiveTenantPlanInDb(input.tenantId, tx as DbLike);
+    const active = await getActiveTenantPlanInDb(input.tenantId, tx as unknown as DbLike);
     if (!active) {
       throw new Error("active_plan_not_found_after_assignment");
     }

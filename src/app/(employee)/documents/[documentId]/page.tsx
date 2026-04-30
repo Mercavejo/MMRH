@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Alert, Button, Container, Paper, Stack, Typography } from "@mui/material";
 import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
@@ -95,7 +94,6 @@ export default async function EmployeeDocumentDetailPage({
             Se o documento nao estiver disponivel para download, verifique o status na lista e use a contestacao guiada quando necessario.
           </Alert>
           <Button
-            component={Link}
             href={downloadHref}
             variant="contained"
             aria-label={`Baixar documento ${documentId}`}
@@ -104,7 +102,6 @@ export default async function EmployeeDocumentDetailPage({
           </Button>
           {contestationAllowed ? (
             <Button
-              component={Link}
               href={contestationHref}
               variant="outlined"
               color="warning"
@@ -113,7 +110,7 @@ export default async function EmployeeDocumentDetailPage({
               Abrir contestacao
             </Button>
           ) : null}
-          <Button component={Link} href={backHref} variant="outlined">
+          <Button href={backHref} variant="outlined">
             Voltar para lista
           </Button>
         </Stack>

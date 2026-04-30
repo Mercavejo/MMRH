@@ -1,10 +1,9 @@
-﻿
-# generated: 2026-04-08T16:56:17.8049290-03:00
-# last_updated: 2026-04-22T22:27:55-03:00
+# generated: 2026-04-27T17:20:03-03:00
+# last_updated: 2026-04-28T14:26:00-03:00
 # project: SISTEMA ADALTO
 # project_key: NOKEY
 # tracking_system: file-system
-# story_location: _bmad-output/implementation-artifacts
+# story_location: /home/wogny/projects/sistema-adalto/_bmad-output/implementation-artifacts
 
 # STATUS DEFINITIONS:
 # ==================
@@ -15,13 +14,13 @@
 #
 # Epic Status Transitions:
 #   - backlog -> in-progress: Automatically when first story is created (via create-story)
-#   - in-progress -> done: Manually when all stories reach 'done' status
+#   - in-progress -> done: Manually when all stories reach done status
 #
 # Story Status:
 #   - backlog: Story only exists in epic file
 #   - ready-for-dev: Story file created in stories folder
 #   - in-progress: Developer actively working on implementation
-#   - review: Ready for code review (via Dev's code-review workflow)
+#   - review: Ready for code review (via Dev code-review workflow)
 #   - done: Story completed
 #
 # Retrospective Status:
@@ -30,12 +29,12 @@
 #
 # WORKFLOW NOTES:
 # ===============
-# - Epic transitions to 'in-progress' automatically when first story is created
+# - Epic transitions to in-progress automatically when first story is created
 # - Stories can be worked in parallel if team capacity allows
-# - SM typically creates next story after previous one is 'done' to incorporate learnings
-# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Developer typically creates next story after previous one is done to incorporate learnings
+# - Dev moves story to review, then runs code-review (fresh context, different LLM recommended)
 
-last_updated: 2026-04-24T12:00:00-03:00
+last_updated: 2026-04-30T10:04:00-03:00
 project: SISTEMA ADALTO
 project_key: NOKEY
 tracking_system: file-system
@@ -97,3 +96,17 @@ development_status:
   8-5-seed-data-fluxo-demo-playtesting: done
   epic-8-retrospective: done
 
+  epic-9: in-progress
+  9-1-executar-playtesting-cliente-com-captura-estruturada-de-evidencias: done
+  9-2-executar-playtesting-admin-separado-e-registrar-gaps-por-papel: done
+  9-3-consolidar-achados-e-converter-bloqueadores-em-backlog: done
+  9-4-emitir-recomendacao-go-fix-defer-para-o-proximo-ciclo: review
+  9-5-publicacao-real-por-colaborador-com-artefato-baixavel-correto: done
+  epic-9-retrospective: optional
+
+decision_gate:
+  recommendation: fix
+  source_story: 9-4-emitir-recomendacao-go-fix-defer-para-o-proximo-ciclo
+  source_report: _bmad-output/implementation-artifacts/playtest-triage-report.md
+  next_cycle_action: corrigir bloqueadores
+  recorded_at: 2026-04-28T23:59:00-03:00

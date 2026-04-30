@@ -16,7 +16,7 @@ export default function LoginPage() {
       }}
     >
       <Container maxWidth="sm" sx={{ display: "flex", justifyContent: "center" }}>
-        <Stack spacing={2} alignItems="center">
+        <Stack spacing={2} sx={{ alignItems: "center" }}>
           <LoginForm />
           <Typography variant="body2" color="rgba(255,255,255,0.7)">
             Primeiro acesso?{" "}

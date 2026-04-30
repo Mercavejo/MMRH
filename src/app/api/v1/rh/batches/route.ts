@@ -164,66 +164,107 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const validation = await validateBatchImportFile(uploadParsed.data.file);
+  try {
+    const validation = await validateBatchImportFile(uploadParsed.data.file);
 
-  if (!validation.is_valid) {
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "file_validation", issues: validation.summary.issues } });
-    await writeBatchImportAudit(
+    if (!validation.is_valid) {
+      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "file_validation", issues: validation.summary.issues } });
+      await writeBatchImportAudit(
+        {
+          tenantId: session.tenantId,
+          actorId: session.userId,
+          correlationId,
+          status: "failure",
+          details: {
+            original_filename: validation.original_filename,
+            source_format: validation.summary.source_format,
+            validation_status: validation.validation_status,
+            critical_issue_count: validation.summary.critical_issue_count,
+            warning_issue_count: validation.summary.warning_issue_count,
+            issues: validation.summary.issues,
+          },
+        },
+        db,
+      );
+
+      return withCorrelationHeader(
+        NextResponse.json(
+          errorResponse("VALIDATION_ERROR", "O relatorio geral nao passou na validacao inicial.", correlationId, {
+            validation_status: validation.validation_status,
+            summary: validation.summary,
+          }),
+          { status: 400 },
+        ),
+        correlationId,
+      );
+    }
+
+    const batch = await persistValidatedBatchImport(
       {
         tenantId: session.tenantId,
-        actorId: session.userId,
+        uploadedBy: session.userId,
         correlationId,
-        status: "failure",
-        details: {
-          original_filename: validation.original_filename,
-          source_format: validation.summary.source_format,
-          validation_status: validation.validation_status,
-          critical_issue_count: validation.summary.critical_issue_count,
-          warning_issue_count: validation.summary.warning_issue_count,
-          issues: validation.summary.issues,
-        },
+        validation,
+        sourceFileBuffer: Buffer.from(await uploadParsed.data.file.arrayBuffer()),
       },
       db,
     );
 
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.import", resourceType: "batches", status: "success", details: { batch_id: batch.batchId } });
+
     return withCorrelationHeader(
       NextResponse.json(
-        errorResponse("VALIDATION_ERROR", "O relatorio geral nao passou na validacao inicial.", correlationId, {
-          validation_status: validation.validation_status,
-          summary: validation.summary,
-        }),
-        { status: 400 },
+        successResponse(
+          {
+            batch_id: batch.batchId,
+            validation_status: validation.validation_status,
+            validation_summary: validation.summary,
+            original_filename: validation.original_filename,
+          },
+          correlationId,
+          session.tenantId,
+        ),
+        { status: 201 },
+      ),
+      correlationId,
+    );
+  } catch (error) {
+    console.error("[rh.batches.import] Falha inesperada ao validar/importar lote", {
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      error,
+    });
+
+    await writePlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.batches.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: {
+        cause: "internal_error",
+        error: error instanceof Error ? error.message : "unknown_error",
+      },
+    });
+
+    return withCorrelationHeader(
+      NextResponse.json(
+        errorResponse(
+          "INTERNAL_SERVER_ERROR",
+          "Falha interna ao validar/importar o lote.",
+          correlationId,
+          process.env.VERCEL_ENV === "preview"
+            ? {
+                debug_message:
+                  error instanceof Error ? error.message : "unknown_error",
+              }
+            : undefined,
+        ),
+        { status: 500 },
       ),
       correlationId,
     );
   }
-
-  const batch = await persistValidatedBatchImport(
-    {
-      tenantId: session.tenantId,
-      uploadedBy: session.userId,
-      correlationId,
-      validation,
-    },
-    db,
-  );
-
-  await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.import", resourceType: "batches", status: "success", details: { batch_id: batch.batchId } });
-
-  return withCorrelationHeader(
-    NextResponse.json(
-      successResponse(
-        {
-          batch_id: batch.batchId,
-          validation_status: validation.validation_status,
-          validation_summary: validation.summary,
-          original_filename: validation.original_filename,
-        },
-        correlationId,
-        session.tenantId,
-      ),
-      { status: 201 },
-    ),
-    correlationId,
-  );
 }

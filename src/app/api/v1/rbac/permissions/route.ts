@@ -29,6 +29,14 @@ const updatePermissionSchema = z.object({
   reason: z.string().min(3).optional(),
 });
 
+async function writeRbacAuditSafely(input: Parameters<typeof writeRbacAudit>[0]) {
+  try {
+    await writeRbacAudit(input);
+  } catch (error) {
+    console.error(`rbac audit failed for ${input.action}`, error);
+  }
+}
+
 async function getSessionAndRole(
   request: NextRequest,
   correlationId: string,
@@ -89,7 +97,7 @@ export async function GET(request: NextRequest) {
   const tenantId = tenantIdParam ?? auth.tenantId;
 
   if (tenantIdParam && tenantIdParam !== auth.tenantId) {
-    await writeRbacAudit({
+    await writeRbacAuditSafely({
       tenantId: auth.tenantId,
       actorId: auth.userId,
       action: "auth.rbac.access.denied.v1",
@@ -98,7 +106,7 @@ export async function GET(request: NextRequest) {
       details: buildAccessDeniedAuditDetails({
         tenantId: auth.tenantId,
         actorId: auth.userId,
-        action: RBAC_ACTIONS.auditRead,
+        action: RBAC_ACTIONS.tenantRead,
         reason: "tenant-mismatch",
         targetTenantId: tenantIdParam,
       }),
@@ -115,12 +123,12 @@ export async function GET(request: NextRequest) {
       actorRole: auth.role,
       actorTenantId: auth.tenantId,
       targetTenantId: tenantId,
-      action: RBAC_ACTIONS.auditRead,
+      action: RBAC_ACTIONS.platformManage,
     });
   } catch (error) {
     const appError = error as AppError;
 
-    await writeRbacAudit({
+    await writeRbacAuditSafely({
       tenantId: auth.tenantId,
       actorId: auth.userId,
       action: "auth.rbac.access.denied.v1",
@@ -182,7 +190,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   if (parsed.data.tenant_id !== auth.tenantId) {
-    await writeRbacAudit({
+    await writeRbacAuditSafely({
       tenantId: auth.tenantId,
       actorId: auth.userId,
       action: "auth.rbac.access.denied.v1",
@@ -213,7 +221,7 @@ export async function PATCH(request: NextRequest) {
   } catch (error) {
     const appError = error as AppError;
 
-    await writeRbacAudit({
+    await writeRbacAuditSafely({
       tenantId: auth.tenantId,
       actorId: auth.userId,
       action: "auth.rbac.access.denied.v1",
@@ -261,7 +269,7 @@ export async function PATCH(request: NextRequest) {
       ),
     );
 
-  await writeRbacAudit({
+  await writeRbacAuditSafely({
     tenantId: parsed.data.tenant_id,
     actorId: auth.userId,
     action: "auth.rbac.permission.changed.v1",

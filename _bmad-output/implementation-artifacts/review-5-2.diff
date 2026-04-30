@@ -1,0 +1,983 @@
+﻿commit 798a4a38ed3cddaeef66a42b8412385b2d2f1ced
+Author: Wogny <sem452001@hotmail.com>
+Date:   Mon Apr 13 17:32:03 2026 -0300
+
+    feat(integrations): validar contrato versionado no intake externo
+
+diff --git a/__tests__/external-ingestions-api.test.ts b/__tests__/external-ingestions-api.test.ts
+index 2d9caa1..de15771 100644
+--- a/__tests__/external-ingestions-api.test.ts
++++ b/__tests__/external-ingestions-api.test.ts
+@@ -1,7 +1,16 @@
++import { createHmac } from "node:crypto";
+ import { NextRequest } from "next/server";
+ import { beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
++const PAYLOAD_PATH = "/api/v1/webhooks/integrations";
++const INTEGRATION_SECRET = "test-integration-secret";
++
++function buildSignature(params: { method: string; path: string; timestamp: string; body: string }) {
++  return createHmac("sha256", INTEGRATION_SECRET)
++    .update([params.method, params.path, params.timestamp, params.body].join("\n"))
++    .digest("hex");
++}
+ 
+ const {
+   validateSessionMock,
+@@ -63,6 +72,9 @@ describe("external ingestions api", () => {
+   beforeEach(() => {
+     vi.clearAllMocks();
+ 
++    process.env.PAYROLL_API_EXTERNAL_INGESTION_SECRET = INTEGRATION_SECRET;
++    process.env.SFTP_GATEWAY_EXTERNAL_INGESTION_SECRET = INTEGRATION_SECRET;
++
+     validateSessionMock.mockResolvedValue({
+       userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+       tenantId: SESSION_TENANT_ID,
+@@ -74,9 +86,16 @@ describe("external ingestions api", () => {
+       ingestion_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+       tenant_id: SESSION_TENANT_ID,
+       source_system: "payroll-api",
++      contract_version: "v1",
+       source_reference: "REF-2026-04",
+       idempotency_key: "idem-12345678",
+       status: "received",
++      contract_validation: {
++        contract_version: "v1",
++        validation_result: "success",
++        failure_code: null,
++        validated_at: "2026-04-13T12:00:00.000Z",
++      },
+       received_at: "2026-04-13T12:00:00.000Z",
+       processing_started_at: null,
+       processed_at: null,
+@@ -106,28 +125,47 @@ describe("external ingestions api", () => {
+   });
+ 
+   it("accepts authorized external intake and returns 202", async () => {
++    const timestamp = "2026-04-13T12:00:00.000Z";
++    const requestBody = JSON.stringify({
++      tenant_id: SESSION_TENANT_ID,
++      contract_version: "v1",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++      payload_summary: { period: "2026-04", documents: 15 },
++    });
++
+     const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+       method: "POST",
+       headers: {
+         "content-type": "application/json",
++        "x-integration-signature": buildSignature({
++          method: "POST",
++          path: PAYLOAD_PATH,
++          timestamp,
++          body: requestBody,
++        }),
++        "x-integration-timestamp": timestamp,
+         "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+         "x-integration-source": "payroll-api",
+       },
+-      body: JSON.stringify({
+-        tenant_id: SESSION_TENANT_ID,
+-        source_reference: "REF-2026-04",
+-        idempotency_key: "idem-12345678",
+-        payload_summary: { documents: 15 },
+-      }),
++      body: requestBody,
+     });
+ 
+     const response = await POST(request);
+-    const body = await response.json();
++    const responseBody = await response.json();
+ 
+     expect(response.status).toBe(202);
+     expect(response.headers.get("x-correlation-id")).toBe("11111111-1111-4111-8111-111111111111");
+-    expect(body.data.source_system).toBe("payroll-api");
+-    expect(registerExternalIngestionMock).toHaveBeenCalled();
++    expect(responseBody.data.source_system).toBe("payroll-api");
++    expect(responseBody.data.contract_version).toBe("v1");
++    expect(responseBody.data.contract_validation.validation_result).toBe("success");
++    expect(registerExternalIngestionMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        tenantId: SESSION_TENANT_ID,
++        sourceSystem: "payroll-api",
++        contractVersion: "v1",
++      }),
++    );
+   });
+ 
+   it("rejects unauthorized source in intake", async () => {
+@@ -152,6 +190,165 @@ describe("external ingestions api", () => {
+     expect(registerExternalIngestionMock).not.toHaveBeenCalled();
+   });
+ 
++  it("rejects tenant mismatch through invalid intake signature", async () => {
++    const goodBody = JSON.stringify({
++      tenant_id: SESSION_TENANT_ID,
++      contract_version: "v1",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++    });
++    const tamperedBody = JSON.stringify({
++      tenant_id: "22222222-2222-4222-8222-222222222222",
++      contract_version: "v1",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++    });
++    const timestamp = "2026-04-13T12:00:00.000Z";
++
++    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
++      method: "POST",
++      headers: {
++        "content-type": "application/json",
++        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        "x-integration-source": "payroll-api",
++        "x-integration-timestamp": timestamp,
++        "x-integration-signature": buildSignature({
++          method: "POST",
++          path: PAYLOAD_PATH,
++          timestamp,
++          body: goodBody,
++        }),
++      },
++      body: tamperedBody,
++    });
++
++    const response = await POST(request);
++    const body = await response.json();
++
++    expect(response.status).toBe(403);
++    expect(body.error.code).toBe("FORBIDDEN");
++    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
++  });
++
++  it("returns 409 for duplicate intake", async () => {
++    const timestamp = "2026-04-13T12:00:00.000Z";
++    const body = JSON.stringify({
++      tenant_id: SESSION_TENANT_ID,
++      contract_version: "v1",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++      payload_summary: { period: "2026-04", documents: 15 },
++    });
++
++    registerExternalIngestionMock.mockRejectedValueOnce(
++      new ExternalIngestionError(
++        "DUPLICATE_INGESTION",
++        "Intake duplicado para a mesma origem e referencia.",
++        409,
++        {
++          failure_code: "DUPLICATE_INGESTION",
++          recommended_action: "Use a mesma chave de idempotencia para reenvio controlado ou abra nova referencia.",
++        },
++      ),
++    );
++
++    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
++      method: "POST",
++      headers: {
++        "content-type": "application/json",
++        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        "x-integration-source": "payroll-api",
++        "x-integration-timestamp": timestamp,
++        "x-integration-signature": buildSignature({
++          method: "POST",
++          path: PAYLOAD_PATH,
++          timestamp,
++          body,
++        }),
++      },
++      body,
++    });
++
++    const response = await POST(request);
++    const bodyResponse = await response.json();
++
++    expect(response.status).toBe(409);
++    expect(bodyResponse.error.code).toBe("DUPLICATE_INGESTION");
++    expect(bodyResponse.error.details.failure_code).toBe("DUPLICATE_INGESTION");
++  });
++
++  it("rejects unsupported contract version with structured validation error", async () => {
++    const timestamp = "2026-04-13T12:00:00.000Z";
++    const body = JSON.stringify({
++      tenant_id: SESSION_TENANT_ID,
++      contract_version: "v999",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++      payload_summary: { period: "2026-04", documents: 15 },
++    });
++
++    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
++      method: "POST",
++      headers: {
++        "content-type": "application/json",
++        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        "x-integration-source": "payroll-api",
++        "x-integration-timestamp": timestamp,
++        "x-integration-signature": buildSignature({
++          method: "POST",
++          path: PAYLOAD_PATH,
++          timestamp,
++          body,
++        }),
++      },
++      body,
++    });
++
++    const response = await POST(request);
++    const responseBody = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(responseBody.error.code).toBe("VALIDATION_ERROR");
++    expect(responseBody.error.details.failure_code).toBe("INVALID_CONTRACT_VERSION");
++    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
++  });
++
++  it("rejects schema-invalid payload with structured validation error", async () => {
++    const timestamp = "2026-04-13T12:00:00.000Z";
++    const body = JSON.stringify({
++      tenant_id: SESSION_TENANT_ID,
++      contract_version: "v1",
++      source_reference: "REF-2026-04",
++      idempotency_key: "idem-12345678",
++      payload_summary: { period: "2026-04" },
++    });
++
++    const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
++      method: "POST",
++      headers: {
++        "content-type": "application/json",
++        "x-correlation-id": "11111111-1111-4111-8111-111111111111",
++        "x-integration-source": "payroll-api",
++        "x-integration-timestamp": timestamp,
++        "x-integration-signature": buildSignature({
++          method: "POST",
++          path: PAYLOAD_PATH,
++          timestamp,
++          body,
++        }),
++      },
++      body,
++    });
++
++    const response = await POST(request);
++    const responseBody = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(responseBody.error.code).toBe("VALIDATION_ERROR");
++    expect(responseBody.error.details.failure_code).toBe("INVALID_PAYLOAD");
++    expect(registerExternalIngestionMock).not.toHaveBeenCalled();
++  });
++
+   it("requires session for listing", async () => {
+     const request = new NextRequest("http://localhost/api/v1/webhooks/integrations", {
+       method: "GET",
+diff --git a/__tests__/external-ingestions-domain.test.ts b/__tests__/external-ingestions-domain.test.ts
+index b9e0d3f..2c4f663 100644
+--- a/__tests__/external-ingestions-domain.test.ts
++++ b/__tests__/external-ingestions-domain.test.ts
+@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
+ import {
+   buildExternalIngestionTimeline,
+   classifyExternalIngestionFailure,
++  getSupportedContractVersions,
+   isValidExternalIngestionStatusTransition,
+   normalizeExternalIngestionFilters,
+   normalizeExternalIngestionRegistration,
++  validateExternalIngestionContract,
+ } from "@/modules/integrations/domain/external-ingestion";
+ 
+ describe("external ingestions domain", () => {
+@@ -12,6 +14,7 @@ describe("external ingestions domain", () => {
+     const normalized = normalizeExternalIngestionRegistration({
+       tenantId: "11111111-1111-4111-8111-111111111111",
+       sourceSystem: "payroll-api",
++      contractVersion: " v1 ",
+       sourceReference: " REF-2026-04 ",
+       idempotencyKey: " idem-12345678 ",
+       payloadSummary: { documents: 10 },
+@@ -19,6 +22,7 @@ describe("external ingestions domain", () => {
+ 
+     expect(normalized.tenantId).toBe("11111111-1111-4111-8111-111111111111");
+     expect(normalized.sourceSystem).toBe("payroll-api");
++    expect(normalized.contractVersion).toBe("v1");
+     expect(normalized.sourceReference).toBe("REF-2026-04");
+     expect(normalized.idempotencyKey).toBe("idem-12345678");
+   });
+@@ -28,6 +32,7 @@ describe("external ingestions domain", () => {
+       normalizeExternalIngestionRegistration({
+         tenantId: "11111111-1111-4111-8111-111111111111",
+         sourceSystem: "erp-x",
++        contractVersion: "v1",
+         sourceReference: "REF-2026-04",
+         idempotencyKey: "idem-12345678",
+       }),
+@@ -73,4 +78,55 @@ describe("external ingestions domain", () => {
+     expect(timeline[0]?.action).toBe("integrations.external_ingestion.received.v1");
+     expect(timeline[2]?.status).toBe("failure");
+   });
++
++  it("validates supported contract version with valid payload schema", () => {
++    const result = validateExternalIngestionContract({
++      sourceSystem: "payroll-api",
++      contractVersion: "v1",
++      payloadSummary: {
++        period: "2026-04",
++        documents: 15,
++        employee_count: 120,
++      },
++    });
++
++    expect(result.success).toBe(true);
++    expect(result.contract_version).toBe("v1");
++    expect(result.validation_result).toBe("success");
++    expect(result.failure_code).toBeNull();
++  });
++
++  it("rejects unsupported contract version", () => {
++    const result = validateExternalIngestionContract({
++      sourceSystem: "payroll-api",
++      contractVersion: "v999",
++      payloadSummary: {
++        period: "2026-04",
++        documents: 15,
++      },
++    });
++
++    expect(result.success).toBe(false);
++    expect(result.validation_result).toBe("failure");
++    expect(result.failure_code).toBe("INVALID_CONTRACT_VERSION");
++  });
++
++  it("rejects payload out of schema for active version", () => {
++    const result = validateExternalIngestionContract({
++      sourceSystem: "payroll-api",
++      contractVersion: "v1",
++      payloadSummary: {
++        period: "2026-04",
++      },
++    });
++
++    expect(result.success).toBe(false);
++    expect(result.validation_result).toBe("failure");
++    expect(result.failure_code).toBe("INVALID_PAYLOAD");
++  });
++
++  it("exposes controlled compatibility matrix by source", () => {
++    expect(getSupportedContractVersions("payroll-api")).toEqual(["v1", "v2"]);
++    expect(getSupportedContractVersions("sftp-gateway")).toEqual(["v1"]);
++  });
+ });
+diff --git a/drizzle/migrations/20260413_contract_validation_tracking.sql b/drizzle/migrations/20260413_contract_validation_tracking.sql
+new file mode 100644
+index 0000000..a7d8e9b
+--- /dev/null
++++ b/drizzle/migrations/20260413_contract_validation_tracking.sql
+@@ -0,0 +1,9 @@
++ALTER TYPE "external_ingestion_failure_code" ADD VALUE IF NOT EXISTS 'INVALID_CONTRACT_VERSION';
++--> statement-breakpoint
++CREATE TYPE "external_ingestion_validation_result" AS ENUM ('success', 'failure');
++--> statement-breakpoint
++ALTER TABLE "external_ingestions"
++  ADD COLUMN "contract_version" text DEFAULT 'v1' NOT NULL,
++  ADD COLUMN "validation_result" "external_ingestion_validation_result" DEFAULT 'success' NOT NULL,
++  ADD COLUMN "validation_failure_code" "external_ingestion_failure_code",
++  ADD COLUMN "validated_at" timestamp with time zone DEFAULT now() NOT NULL;
+\ No newline at end of file
+diff --git a/src/app/api/v1/webhooks/integrations/route.ts b/src/app/api/v1/webhooks/integrations/route.ts
+index 51c96f1..e55121f 100644
+--- a/src/app/api/v1/webhooks/integrations/route.ts
++++ b/src/app/api/v1/webhooks/integrations/route.ts
+@@ -1,3 +1,4 @@
++import { createHmac, timingSafeEqual } from "node:crypto";
+ import { and, eq } from "drizzle-orm";
+ import { NextRequest, NextResponse } from "next/server";
+ import { z } from "zod";
+@@ -10,10 +11,15 @@ import { userTenantMappings } from "@/lib/db/schema";
+ import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+ import { listExternalIngestions, ExternalIngestionError } from "@/modules/integrations/application/list-external-ingestions";
+ import { registerExternalIngestion } from "@/modules/integrations/application/register-external-ingestion";
+-import { AUTHORIZED_EXTERNAL_SOURCES } from "@/modules/integrations/domain/external-ingestion";
++import {
++  AUTHORIZED_EXTERNAL_SOURCES,
++  type AuthorizedExternalSource,
++  validateExternalIngestionContract,
++} from "@/modules/integrations/domain/external-ingestion";
+ 
+ const intakeSchema = z.object({
+   tenant_id: z.string().uuid(),
++  contract_version: z.string().trim().min(1).max(32),
+   source_reference: z.string().trim().min(3).max(255),
+   idempotency_key: z.string().trim().min(8).max(128),
+   payload_summary: z.record(z.string(), z.unknown()).optional(),
+@@ -48,6 +54,44 @@ function jsonResponse<T>(
+   return withCorrelationHeader(NextResponse.json(body, init), correlationId);
+ }
+ 
++function getIntegrationSecret(sourceSystem: AuthorizedExternalSource): string {
++  const secretEnvKeyBySource: Record<AuthorizedExternalSource, string> = {
++    "payroll-api": "PAYROLL_API_EXTERNAL_INGESTION_SECRET",
++    "sftp-gateway": "SFTP_GATEWAY_EXTERNAL_INGESTION_SECRET",
++  };
++
++  const secret = process.env[secretEnvKeyBySource[sourceSystem]];
++  if (!secret) {
++    throw new Error("EXTERNAL_INGESTION_SECRET_MISSING");
++  }
++
++  return secret;
++}
++
++function buildSignedWebhookPayload(params: {
++  method: string;
++  path: string;
++  timestamp: string;
++  body: string;
++}) {
++  return [params.method, params.path, params.timestamp, params.body].join("\n");
++}
++
++function signWebhookPayload(secret: string, payload: string): string {
++  return createHmac("sha256", secret).update(payload).digest("hex");
++}
++
++function isValidSignature(expected: string, provided: string): boolean {
++  const expectedBuffer = Buffer.from(expected);
++  const providedBuffer = Buffer.from(provided);
++
++  if (expectedBuffer.length !== providedBuffer.length) {
++    return false;
++  }
++
++  return timingSafeEqual(expectedBuffer, providedBuffer);
++}
++
+ async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
+   const mappings = await db
+     .select({ role: userTenantMappings.role })
+@@ -61,7 +105,9 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
+ export async function POST(request: NextRequest) {
+   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
+   const sourceSystem = request.headers.get("x-integration-source") ?? undefined;
+-  const parsedBody = intakeSchema.safeParse(await request.json().catch(() => null));
++  const timestamp = request.headers.get("x-integration-timestamp") ?? undefined;
++  const signature = request.headers.get("x-integration-signature") ?? undefined;
++  const rawBody = await request.text().catch(() => null);
+ 
+   if (!sourceSystem || !AUTHORIZED_EXTERNAL_SOURCES.includes(sourceSystem as (typeof AUTHORIZED_EXTERNAL_SOURCES)[number])) {
+     return jsonResponse(
+@@ -73,6 +119,57 @@ export async function POST(request: NextRequest) {
+     );
+   }
+ 
++  if (!timestamp || !signature || !rawBody) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Assinatura de integracao ausente ou invalida.", correlationId, {
++        source_system: sourceSystem,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  let parsedBodyValue: unknown;
++
++  try {
++    parsedBodyValue = JSON.parse(rawBody);
++  } catch {
++    parsedBodyValue = null;
++  }
++
++  let secret: string;
++  try {
++    secret = getIntegrationSecret(sourceSystem as AuthorizedExternalSource);
++  } catch {
++    return jsonResponse(
++      errorResponse("INTERNAL_SERVER_ERROR", "Segredo de integracao ausente.", correlationId),
++      correlationId,
++      { status: 500 },
++    );
++  }
++
++  const expectedSignature = signWebhookPayload(
++    secret,
++    buildSignedWebhookPayload({
++      method: request.method,
++      path: request.nextUrl.pathname,
++      timestamp,
++      body: rawBody,
++    }),
++  );
++
++  if (!isValidSignature(expectedSignature, signature)) {
++    return jsonResponse(
++      errorResponse("FORBIDDEN", "Assinatura de integracao invalida.", correlationId, {
++        source_system: sourceSystem,
++      }),
++      correlationId,
++      { status: 403 },
++    );
++  }
++
++  const parsedBody = intakeSchema.safeParse(parsedBodyValue);
++
+   if (!parsedBody.success) {
+     return jsonResponse(
+       errorResponse("VALIDATION_ERROR", "Payload de intake externo invalido.", correlationId, {
+@@ -83,10 +180,31 @@ export async function POST(request: NextRequest) {
+     );
+   }
+ 
++  const contractValidation = validateExternalIngestionContract({
++    sourceSystem: sourceSystem as AuthorizedExternalSource,
++    contractVersion: parsedBody.data.contract_version,
++    payloadSummary: parsedBody.data.payload_summary ?? {},
++  });
++
++  if (!contractValidation.success) {
++    return jsonResponse(
++      errorResponse("VALIDATION_ERROR", "Contrato externo invalido para a origem informada.", correlationId, {
++        source_system: sourceSystem,
++        contract_version: contractValidation.contract_version,
++        validation_result: contractValidation.validation_result,
++        failure_code: contractValidation.failure_code,
++        ...contractValidation.details,
++      }),
++      correlationId,
++      { status: 400 },
++    );
++  }
++
+   try {
+     const record = await registerExternalIngestion({
+       tenantId: parsedBody.data.tenant_id,
+       sourceSystem,
++      contractVersion: parsedBody.data.contract_version,
+       sourceReference: parsedBody.data.source_reference,
+       idempotencyKey: parsedBody.data.idempotency_key,
+       payloadSummary: parsedBody.data.payload_summary,
+@@ -104,7 +222,10 @@ export async function POST(request: NextRequest) {
+     }
+ 
+     return jsonResponse(
+-      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao registrar intake externo.", correlationId),
++      errorResponse("PROCESSING_FAILURE", "Falha ao registrar intake externo.", correlationId, {
++        failure_code: "PROCESSING_FAILURE",
++        recommended_action: "Revise os logs tecnicos e tente novamente.",
++      }),
+       correlationId,
+       { status: 500 },
+     );
+diff --git a/src/lib/db/schema/external-ingestions.ts b/src/lib/db/schema/external-ingestions.ts
+index bbf99e8..738948e 100644
+--- a/src/lib/db/schema/external-ingestions.ts
++++ b/src/lib/db/schema/external-ingestions.ts
+@@ -12,11 +12,17 @@ export const externalIngestionStatusEnum = pgEnum("external_ingestion_status", [
+ export const externalIngestionFailureCodeEnum = pgEnum("external_ingestion_failure_code", [
+   "UNAUTHORIZED_SOURCE",
+   "INVALID_PAYLOAD",
++  "INVALID_CONTRACT_VERSION",
+   "TENANT_MISMATCH",
+   "DUPLICATE_INGESTION",
+   "PROCESSING_FAILURE",
+ ]);
+ 
++export const externalIngestionValidationResultEnum = pgEnum("external_ingestion_validation_result", [
++  "success",
++  "failure",
++]);
++
+ export const externalIngestions = pgTable(
+   "external_ingestions",
+   {
+@@ -25,9 +31,13 @@ export const externalIngestions = pgTable(
+       .notNull()
+       .references(() => tenants.id, { onDelete: "restrict" }),
+     sourceSystem: text("source_system").notNull(),
++    contractVersion: text("contract_version").notNull().default("v1"),
+     sourceReference: text("source_reference").notNull(),
+     idempotencyKey: text("idempotency_key").notNull(),
+     status: externalIngestionStatusEnum("status").notNull().default("received"),
++    validationResult: externalIngestionValidationResultEnum("validation_result").notNull().default("success"),
++    validationFailureCode: externalIngestionFailureCodeEnum("validation_failure_code"),
++    validatedAt: timestamp("validated_at", { withTimezone: true }).notNull().defaultNow(),
+     payloadSummary: jsonb("payload_summary").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+     processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
+diff --git a/src/modules/integrations/application/register-external-ingestion.ts b/src/modules/integrations/application/register-external-ingestion.ts
+index 7ee4c78..dd88cf3 100644
+--- a/src/modules/integrations/application/register-external-ingestion.ts
++++ b/src/modules/integrations/application/register-external-ingestion.ts
+@@ -1,4 +1,5 @@
+ import {
++  classifyExternalIngestionFailure,
+   normalizeExternalIngestionRegistration,
+   type ExternalIngestionRegistrationInput,
+ } from "../domain/external-ingestion";
+@@ -33,11 +34,21 @@ export async function registerExternalIngestion(input: ExternalIngestionRegistra
+   } catch (error) {
+     if (error instanceof ExternalIngestionRepositoryError) {
+       if (error.code === "DUPLICATE_INGESTION") {
+-        throw new ExternalIngestionError("DUPLICATE_INGESTION", error.message, 409, error.details);
++        const classification = classifyExternalIngestionFailure("DUPLICATE_INGESTION");
++        throw new ExternalIngestionError("DUPLICATE_INGESTION", error.message, 409, {
++          ...error.details,
++          failure_code: "DUPLICATE_INGESTION",
++          recommended_action: classification.recommended_action,
++        });
+       }
+ 
+       if (error.code === "PROCESSING_FAILURE") {
+-        throw new ExternalIngestionError("PROCESSING_FAILURE", error.message, 500, error.details);
++        const classification = classifyExternalIngestionFailure("PROCESSING_FAILURE");
++        throw new ExternalIngestionError("PROCESSING_FAILURE", error.message, 500, {
++          ...error.details,
++          failure_code: "PROCESSING_FAILURE",
++          recommended_action: classification.recommended_action,
++        });
+       }
+     }
+ 
+diff --git a/src/modules/integrations/domain/external-ingestion.ts b/src/modules/integrations/domain/external-ingestion.ts
+index 973662c..ca4acf3 100644
+--- a/src/modules/integrations/domain/external-ingestion.ts
++++ b/src/modules/integrations/domain/external-ingestion.ts
+@@ -1,9 +1,11 @@
+ import { buildAuditTimeline, type AuditTimelineEntry } from "@/modules/audit/domain/audit-event-filters";
++import { z } from "zod";
+ 
+ export const EXTERNAL_INGESTION_STATUSES = ["received", "processing", "processed", "failed"] as const;
+ export const EXTERNAL_INGESTION_FAILURE_CODES = [
+   "UNAUTHORIZED_SOURCE",
+   "INVALID_PAYLOAD",
++  "INVALID_CONTRACT_VERSION",
+   "TENANT_MISMATCH",
+   "DUPLICATE_INGESTION",
+   "PROCESSING_FAILURE",
+@@ -30,6 +32,7 @@ export type NormalizedExternalIngestionFilters = {
+ export type ExternalIngestionRegistrationInput = {
+   tenantId?: string;
+   sourceSystem?: string;
++  contractVersion?: string;
+   sourceReference?: string;
+   idempotencyKey?: string;
+   payloadSummary?: Record<string, unknown>;
+@@ -38,20 +41,38 @@ export type ExternalIngestionRegistrationInput = {
+ export type NormalizedExternalIngestionRegistration = {
+   tenantId: string;
+   sourceSystem: AuthorizedExternalSource;
++  contractVersion: string;
+   sourceReference: string;
+   idempotencyKey: string;
+   payloadSummary: Record<string, unknown>;
+ };
+ 
++export type ExternalContractValidationResult = {
++  success: boolean;
++  source_system: AuthorizedExternalSource;
++  contract_version: string;
++  validation_result: "success" | "failure";
++  failure_code: ExternalIngestionFailureCode | null;
++  details: Record<string, unknown> | null;
++};
++
+ export type ExternalIngestionResolution = {
+   failure_code: ExternalIngestionFailureCode | null;
+   recommended_action: string | null;
+ };
+ 
++export type ExternalIngestionContractValidation = {
++  contract_version: string;
++  validation_result: "success" | "failure";
++  failure_code: ExternalIngestionFailureCode | null;
++  validated_at: string;
++};
++
+ export type ExternalIngestion = {
+   ingestion_id: string;
+   tenant_id: string;
+   source_system: AuthorizedExternalSource;
++  contract_version: string;
+   source_reference: string;
+   idempotency_key: string;
+   status: ExternalIngestionStatus;
+@@ -59,12 +80,39 @@ export type ExternalIngestion = {
+   processing_started_at: string | null;
+   processed_at: string | null;
+   failed_at: string | null;
++  contract_validation: ExternalIngestionContractValidation;
+   resolution: ExternalIngestionResolution;
+   correlation_id: string;
+   payload_summary: Record<string, unknown>;
+   timeline: AuditTimelineEntry[];
+ };
+ 
++const payrollApiV1Schema = z.object({
++  period: z.string().trim().min(1),
++  documents: z.number().int().nonnegative(),
++  employee_count: z.number().int().positive().optional(),
++});
++
++const payrollApiV2Schema = payrollApiV1Schema.extend({
++  batch_id: z.string().trim().min(1),
++});
++
++const sftpGatewayV1Schema = z.object({
++  file_name: z.string().trim().min(1),
++  rows: z.number().int().nonnegative(),
++  checksum: z.string().trim().min(8),
++});
++
++const CONTRACT_SCHEMA_BY_SOURCE: Record<AuthorizedExternalSource, Record<string, z.ZodType<Record<string, unknown>>>> = {
++  "payroll-api": {
++    v1: payrollApiV1Schema,
++    v2: payrollApiV2Schema,
++  },
++  "sftp-gateway": {
++    v1: sftpGatewayV1Schema,
++  },
++};
++
+ function parseUuid(value: string | undefined, fieldName: string): string {
+   const normalized = value?.trim();
+   if (!normalized) {
+@@ -105,12 +153,62 @@ export function normalizeExternalIngestionRegistration(
+   return {
+     tenantId: parseUuid(input.tenantId, "tenant_id"),
+     sourceSystem: normalizeSourceSystem(input.sourceSystem),
++    contractVersion: parseText(input.contractVersion, "contract_version"),
+     sourceReference: parseText(input.sourceReference, "source_reference", 3),
+     idempotencyKey: parseText(input.idempotencyKey, "idempotency_key", 8),
+     payloadSummary: input.payloadSummary ?? {},
+   };
+ }
+ 
++export function getSupportedContractVersions(sourceSystem: AuthorizedExternalSource): string[] {
++  return Object.keys(CONTRACT_SCHEMA_BY_SOURCE[sourceSystem]);
++}
++
++export function validateExternalIngestionContract(input: {
++  sourceSystem: AuthorizedExternalSource;
++  contractVersion: string;
++  payloadSummary: Record<string, unknown>;
++}): ExternalContractValidationResult {
++  const normalizedVersion = input.contractVersion.trim();
++  const schema = CONTRACT_SCHEMA_BY_SOURCE[input.sourceSystem][normalizedVersion];
++
++  if (!schema) {
++    return {
++      success: false,
++      source_system: input.sourceSystem,
++      contract_version: normalizedVersion,
++      validation_result: "failure",
++      failure_code: "INVALID_CONTRACT_VERSION",
++      details: {
++        supported_versions: getSupportedContractVersions(input.sourceSystem),
++      },
++    };
++  }
++
++  const parsed = schema.safeParse(input.payloadSummary);
++  if (!parsed.success) {
++    return {
++      success: false,
++      source_system: input.sourceSystem,
++      contract_version: normalizedVersion,
++      validation_result: "failure",
++      failure_code: "INVALID_PAYLOAD",
++      details: {
++        issues: parsed.error.issues,
++      },
++    };
++  }
++
++  return {
++    success: true,
++    source_system: input.sourceSystem,
++    contract_version: normalizedVersion,
++    validation_result: "success",
++    failure_code: null,
++    details: null,
++  };
++}
++
+ export function normalizeExternalIngestionFilters(input: ExternalIngestionFilterInput): NormalizedExternalIngestionFilters {
+   const status = input.status?.trim();
+   const sourceSystem = input.sourceSystem?.trim();
+@@ -160,6 +258,13 @@ export function classifyExternalIngestionFailure(code: ExternalIngestionFailureC
+     };
+   }
+ 
++  if (code === "INVALID_CONTRACT_VERSION") {
++    return {
++      recommended_action: "Confirme a versao de contrato suportada para a origem e reenvie com schema compativel.",
++      status: "failed",
++    };
++  }
++
+   if (code === "TENANT_MISMATCH") {
+     return {
+       recommended_action: "Confirme o tenant de destino e reenvie apenas para o tenant autorizado.",
+diff --git a/src/modules/integrations/infrastructure/external-ingestions-repository.ts b/src/modules/integrations/infrastructure/external-ingestions-repository.ts
+index d242d22..b29a4ab 100644
+--- a/src/modules/integrations/infrastructure/external-ingestions-repository.ts
++++ b/src/modules/integrations/infrastructure/external-ingestions-repository.ts
+@@ -36,9 +36,13 @@ function mapExternalIngestionRow(row: {
+   id: string;
+   tenantId: string;
+   sourceSystem: string;
++  contractVersion: string;
+   sourceReference: string;
+   idempotencyKey: string;
+   status: ExternalIngestionStatus;
++  validationResult: "success" | "failure";
++  validationFailureCode: ExternalIngestionFailureCode | null;
++  validatedAt: Date;
+   payloadSummary: Record<string, unknown> | null;
+   receivedAt: Date;
+   processingStartedAt: Date | null;
+@@ -54,9 +58,16 @@ function mapExternalIngestionRow(row: {
+     ingestion_id: row.id,
+     tenant_id: row.tenantId,
+     source_system: row.sourceSystem as AuthorizedExternalSource,
++    contract_version: row.contractVersion,
+     source_reference: row.sourceReference,
+     idempotency_key: row.idempotencyKey,
+     status: row.status,
++    contract_validation: {
++      contract_version: row.contractVersion,
++      validation_result: row.validationResult,
++      failure_code: row.validationFailureCode,
++      validated_at: row.validatedAt.toISOString(),
++    },
+     received_at: row.receivedAt.toISOString(),
+     processing_started_at: row.processingStartedAt?.toISOString() ?? null,
+     processed_at: row.processedAt?.toISOString() ?? null,
+@@ -117,11 +128,34 @@ export async function registerExternalIngestionInDb(
+     .limit(1);
+ 
+   if (duplicateRows[0]) {
++    const classification = classifyExternalIngestionFailure("DUPLICATE_INGESTION");
++
++    await dbClient.insert(auditLogs).values({
++      tenantId: input.tenantId,
++      actorId: null,
++      correlationId: input.correlationId,
++      action: "integrations.external_ingestion.failed.v1",
++      resourceType: "external_ingestion",
++      resourceId: duplicateRows[0].id,
++      status: "failure",
++      details: {
++        ingestion_id: duplicateRows[0].id,
++        source_reference: duplicateRows[0].sourceReference,
++        idempotency_key: duplicateRows[0].idempotencyKey,
++        failure_code: "DUPLICATE_INGESTION",
++        recommended_action: classification.recommended_action,
++      },
++    });
++
+     throw new ExternalIngestionRepositoryError(
+       "DUPLICATE_INGESTION",
+       "Intake duplicado para a mesma origem e referencia.",
+       409,
+-      mapDuplicateDetails(duplicateRows[0]),
++      {
++        ...mapDuplicateDetails(duplicateRows[0]),
++        failure_code: "DUPLICATE_INGESTION",
++        recommended_action: classification.recommended_action,
++      },
+     );
+   }
+ 
+@@ -131,9 +165,13 @@ export async function registerExternalIngestionInDb(
+     .values({
+       tenantId: input.tenantId,
+       sourceSystem: input.sourceSystem,
++      contractVersion: input.contractVersion,
+       sourceReference: input.sourceReference,
+       idempotencyKey: input.idempotencyKey,
+       status: "received",
++      validationResult: "success",
++      validationFailureCode: null,
++      validatedAt: now,
+       payloadSummary: input.payloadSummary,
+       receivedAt: now,
+       correlationId: input.correlationId,
+@@ -144,9 +182,13 @@ export async function registerExternalIngestionInDb(
+       id: externalIngestions.id,
+       tenantId: externalIngestions.tenantId,
+       sourceSystem: externalIngestions.sourceSystem,
++      contractVersion: externalIngestions.contractVersion,
+       sourceReference: externalIngestions.sourceReference,
+       idempotencyKey: externalIngestions.idempotencyKey,
+       status: externalIngestions.status,
++      validationResult: externalIngestions.validationResult,
++      validationFailureCode: externalIngestions.validationFailureCode,
++      validatedAt: externalIngestions.validatedAt,
+       payloadSummary: externalIngestions.payloadSummary,
+       receivedAt: externalIngestions.receivedAt,
+       processingStartedAt: externalIngestions.processingStartedAt,
+@@ -161,10 +203,32 @@ export async function registerExternalIngestionInDb(
+ 
+   const row = rows[0];
+   if (!row) {
++    const classification = classifyExternalIngestionFailure("PROCESSING_FAILURE");
++
++    await dbClient.insert(auditLogs).values({
++      tenantId: input.tenantId,
++      actorId: null,
++      correlationId: input.correlationId,
++      action: "integrations.external_ingestion.failed.v1",
++      resourceType: "external_ingestion",
++      resourceId: input.sourceReference,
++      status: "failure",
++      details: {
++        source_reference: input.sourceReference,
++        idempotency_key: input.idempotencyKey,
++        failure_code: "PROCESSING_FAILURE",
++        recommended_action: classification.recommended_action,
++      },
++    });
++
+     throw new ExternalIngestionRepositoryError(
+       "PROCESSING_FAILURE",
+       "Falha ao registrar intake externo.",
+       500,
++      {
++        failure_code: "PROCESSING_FAILURE",
++        recommended_action: classification.recommended_action,
++      },
+     );
+   }
+ 
+@@ -212,9 +276,13 @@ export async function listExternalIngestionsFromDb(
+         id: externalIngestions.id,
+         tenantId: externalIngestions.tenantId,
+         sourceSystem: externalIngestions.sourceSystem,
++        contractVersion: externalIngestions.contractVersion,
+         sourceReference: externalIngestions.sourceReference,
+         idempotencyKey: externalIngestions.idempotencyKey,
+         status: externalIngestions.status,
++        validationResult: externalIngestions.validationResult,
++        validationFailureCode: externalIngestions.validationFailureCode,
++        validatedAt: externalIngestions.validatedAt,
+         payloadSummary: externalIngestions.payloadSummary,
+         receivedAt: externalIngestions.receivedAt,
+         processingStartedAt: externalIngestions.processingStartedAt,
+@@ -293,9 +361,13 @@ export async function listExternalIngestionsFromDb(
+       id: externalIngestions.id,
+       tenantId: externalIngestions.tenantId,
+       sourceSystem: externalIngestions.sourceSystem,
++      contractVersion: externalIngestions.contractVersion,
+       sourceReference: externalIngestions.sourceReference,
+       idempotencyKey: externalIngestions.idempotencyKey,
+       status: externalIngestions.status,
++      validationResult: externalIngestions.validationResult,
++      validationFailureCode: externalIngestions.validationFailureCode,
++      validatedAt: externalIngestions.validatedAt,
+       payloadSummary: externalIngestions.payloadSummary,
+       receivedAt: externalIngestions.receivedAt,
+       processingStartedAt: externalIngestions.processingStartedAt,

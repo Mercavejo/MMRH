@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { DownloadEligibilityError } from "@/lib/documents/get-downloadable-document";
 import { handleEmployeeDocumentDownload } from "@/lib/documents/employee-download-handler";
+import { DocumentStorageError } from "@/lib/documents/storage";
 
 const SESSION_TENANT_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -9,6 +10,7 @@ const USER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 type MockDeps = {
   validateSessionFn: ReturnType<typeof vi.fn>;
   getDownloadableDocumentFn: ReturnType<typeof vi.fn>;
+  readDocumentArtifactFn: ReturnType<typeof vi.fn>;
   assertTenantActionFn: ReturnType<typeof vi.fn>;
   resolveRoleFn: ReturnType<typeof vi.fn>;
   writeDocumentDownloadAuditFn: ReturnType<typeof vi.fn>;
@@ -18,6 +20,7 @@ function buildDeps(): MockDeps {
   return {
     validateSessionFn: vi.fn(),
     getDownloadableDocumentFn: vi.fn(),
+    readDocumentArtifactFn: vi.fn(),
     assertTenantActionFn: vi.fn(),
     resolveRoleFn: vi.fn(),
     writeDocumentDownloadAuditFn: vi.fn(),
@@ -49,6 +52,7 @@ describe("employee documents download api", () => {
     });
 
     deps.writeDocumentDownloadAuditFn.mockResolvedValue(undefined);
+    deps.readDocumentArtifactFn.mockResolvedValue(Buffer.from("%PDF-real-download%"));
   });
 
   it("returns signed download metadata without exposing storage key", async () => {
@@ -73,6 +77,7 @@ describe("employee documents download api", () => {
     );
     expect(body.data.download_url).toContain("sig=");
     expect(body.data.document.storage_key).toBeUndefined();
+    expect(deps.writeDocumentDownloadAuditFn).not.toHaveBeenCalled();
   });
 
   it("rejects invalid document id", async () => {
@@ -197,12 +202,8 @@ describe("employee documents download api", () => {
     expect(body.error.code).toBe("DOCUMENT_NOT_DOWNLOADABLE");
   });
 
-  it("returns fail-safe error when audit write fails after eligibility success", async () => {
-    deps.writeDocumentDownloadAuditFn.mockRejectedValue(
-      new Error("audit unavailable"),
-    );
-
-    const request = new NextRequest(
+  it("returns fail-safe error when signed download audit write fails", async () => {
+    const initRequest = new NextRequest(
       "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
       {
         headers: {
@@ -211,8 +212,28 @@ describe("employee documents download api", () => {
       },
     );
 
+    const initResponse = await handleEmployeeDocumentDownload(
+      initRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+    const initBody = await initResponse.json();
+    const signedUrl = new URL(initBody.data.download_url as string);
+
+    deps.writeDocumentDownloadAuditFn.mockRejectedValue(
+      new Error("audit unavailable"),
+    );
+
+    const signedRequest = new NextRequest(signedUrl.toString(), {
+      headers: {
+        cookie: "session_id=token",
+      },
+    });
+
     const response = await handleEmployeeDocumentDownload(
-      request,
+      signedRequest,
       {
         documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       },
@@ -259,9 +280,65 @@ describe("employee documents download api", () => {
     );
 
     expect(signedResponse.status).toBe(200);
-    expect(await signedResponse.text()).not.toContain("storage_key=");
+    expect(Buffer.from(await signedResponse.arrayBuffer()).toString()).toBe(
+      "%PDF-real-download%",
+    );
+    expect(signedResponse.headers.get("content-type")).toBe("application/pdf");
     expect(signedResponse.headers.get("content-disposition")).toContain(
       "attachment; filename=\"holerite-2026-03.pdf\"",
     );
+    expect(deps.writeDocumentDownloadAuditFn).toHaveBeenCalledTimes(1);
+    expect(deps.writeDocumentDownloadAuditFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "success",
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+    );
+  });
+
+  it("returns 503 when signed download cannot read private artifact", async () => {
+    deps.readDocumentArtifactFn.mockRejectedValue(
+      new DocumentStorageError(
+        "DOCUMENT_STORAGE_NOT_FOUND",
+        "Artefato ausente.",
+      ),
+    );
+
+    const initRequest = new NextRequest(
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
+      {
+        headers: {
+          cookie: "session_id=token",
+        },
+      },
+    );
+
+    const initResponse = await handleEmployeeDocumentDownload(
+      initRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+    const initBody = await initResponse.json();
+    const signedUrl = new URL(initBody.data.download_url as string);
+
+    const signedRequest = new NextRequest(signedUrl.toString(), {
+      headers: {
+        cookie: "session_id=token",
+      },
+    });
+
+    const signedResponse = await handleEmployeeDocumentDownload(
+      signedRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+    const signedBody = await signedResponse.json();
+
+    expect(signedResponse.status).toBe(503);
+    expect(signedBody.error.code).toBe("DOWNLOAD_UNAVAILABLE");
   });
 });

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import pdfParse from "pdf-parse";
 
 export const BATCH_DOCUMENT_TYPES = ["holerite", "cartao_ponto"] as const;
 
@@ -89,6 +88,100 @@ function extractFieldByRegex(source: string, pattern: RegExp): string | null {
   return match?.[1]?.trim() || null;
 }
 
+function extractEmployeeHeaderFromPdfPage(pageText: string): {
+  codigoColaborador: string | null;
+  nomeColaborador: string | null;
+} {
+  const labeledCode = extractFieldByRegex(
+    pageText,
+    /(?:codigo[_\s-]*colaborador|employee[_\s-]*identifier|matricula)\s*[:#-]?\s*([A-Za-z0-9._-]+)/i,
+  );
+  const labeledName = extractFieldByRegex(
+    pageText,
+    /(?:nome(?:\s+do\s+colaborador)?|employee(?:\s+name)?)\s*[:#-]?\s*([^\n\r]+)/i,
+  );
+
+  if (labeledCode || labeledName) {
+    return {
+      codigoColaborador: labeledCode,
+      nomeColaborador: labeledName,
+    };
+  }
+
+  const normalizedLines = pageText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\t+/g, " ").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of normalizedLines) {
+    const payrollHeaderMatch = line.match(
+      /^(\d{3,6})\s+([A-ZÀ-Ý][A-ZÀ-Ý'’.`´^~Çç\- ]+?)(?=\s+\d{4}-\d{2}\b|\s{2,}|$)/u,
+    );
+
+    if (payrollHeaderMatch) {
+      return {
+        codigoColaborador: payrollHeaderMatch[1],
+        nomeColaborador: payrollHeaderMatch[2].trim(),
+      };
+    }
+  }
+
+  return {
+    codigoColaborador: null,
+    nomeColaborador: null,
+  };
+}
+
+function extractPeriodRefFromPdfPage(pageText: string): string | null {
+  const explicitPeriod = extractFieldByRegex(
+    pageText,
+    /(?:periodo|period_ref|competencia)\s*[:#-]?\s*(\d{4}-(0[1-9]|1[0-2]))/i,
+  );
+
+  if (explicitPeriod) {
+    return explicitPeriod;
+  }
+
+  const monthMap: Record<string, string> = {
+    janeiro: "01",
+    fevereiro: "02",
+    marco: "03",
+    abril: "04",
+    maio: "05",
+    junho: "06",
+    julho: "07",
+    agosto: "08",
+    setembro: "09",
+    outubro: "10",
+    novembro: "11",
+    dezembro: "12",
+  };
+
+  const normalizedPageText = normalizeName(pageText);
+  const monthPeriodMatch = normalizedPageText.match(
+    /\b(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})\b/,
+  );
+
+  if (!monthPeriodMatch) {
+    return null;
+  }
+
+  const month = monthMap[monthPeriodMatch[1]];
+  const year = monthPeriodMatch[2];
+
+  return month ? `${year}-${month}` : null;
+}
+
+function resolvePdfDocumentType(pageText: string): BatchImportDocumentType {
+  const normalizedPageText = normalizeName(pageText);
+
+  if (normalizedPageText.includes("cartao de ponto")) {
+    return "cartao_ponto";
+  }
+
+  return "holerite";
+}
+
 function extractPdfPageRows(rawText: string): BatchImportRow[] {
   const pages = rawText
     .split("\f")
@@ -96,24 +189,15 @@ function extractPdfPageRows(rawText: string): BatchImportRow[] {
     .filter((page) => page.length > 0);
 
   return pages.map((pageText, index) => {
-    const codigoColaborador = extractFieldByRegex(
-      pageText,
-      /(?:codigo[_\s-]*colaborador|employee[_\s-]*identifier|matricula)\s*[:#-]?\s*([A-Za-z0-9._-]+)/i,
-    );
-    const nome = extractFieldByRegex(
-      pageText,
-      /(?:nome(?:\s+do\s+colaborador)?|employee(?:\s+name)?)\s*[:#-]?\s*([^\n\r]+)/i,
-    );
-    const periodRef = extractFieldByRegex(
-      pageText,
-      /(?:periodo|period_ref|competencia)\s*[:#-]?\s*(\d{4}-(0[1-9]|1[0-2]))/i,
-    );
+    const { codigoColaborador, nomeColaborador: nome } =
+      extractEmployeeHeaderFromPdfPage(pageText);
+    const periodRef = extractPeriodRefFromPdfPage(pageText);
     const nomeNormalizado = nome ? normalizeName(nome) : null;
     const employeeIdentifier = codigoColaborador ?? "";
 
     return {
       employee_identifier: employeeIdentifier,
-      document_type: "holerite",
+      document_type: resolvePdfDocumentType(pageText),
       period_ref: periodRef ?? "",
       page_index: index + 1,
       raw_text: pageText,
@@ -126,6 +210,17 @@ function extractPdfPageRows(rawText: string): BatchImportRow[] {
 function isPasswordProtectedPdfError(error: unknown): boolean {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   return message.includes("password") || message.includes("encrypted");
+}
+
+async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; numpages: number }> {
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  const result = await extractText(pdf, { mergePages: false });
+
+  return {
+    text: result.text.join("\f"),
+    numpages: result.totalPages,
+  };
 }
 
 function parseCsvLine(line: string): string[] {
@@ -267,7 +362,6 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
     };
   }
 
-  const text = await file.text();
   const sourceFormat = isJsonSource(mimeType, originalFilename)
     ? "json"
     : isCsvSource(mimeType, originalFilename)
@@ -303,35 +397,12 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
   const rows: BatchImportRow[] = [];
   let sourceTotalRows = 0;
 
-  if (!text.trim()) {
-    issues.push({
-      code: "empty_file",
-      message: "O arquivo de lote esta vazio.",
-      severity: "critical",
-    });
-
-    return {
-      is_valid: false,
-      validation_status: "blocked",
-      original_filename: originalFilename,
-      mime_type: mimeType,
-      file_size_bytes: fileSizeBytes,
-      rows,
-      summary: buildBlockedSummary({
-        sourceFormat,
-        issues,
-        totalRows: 0,
-        validRows: 0,
-      }),
-    };
-  }
-
   if (sourceFormat === "pdf") {
     let parsedPdf: { text?: string; numpages?: number };
 
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
-      parsedPdf = (await pdfParse(buffer)) as { text?: string; numpages?: number };
+      parsedPdf = await parsePdfBuffer(buffer);
     } catch (error) {
       const code = isPasswordProtectedPdfError(error)
         ? "PDF_PASSWORD_PROTECTED"
@@ -449,6 +520,30 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
       rows.push(row);
     });
   } else if (sourceFormat === "json") {
+    const text = await file.text();
+    if (!text.trim()) {
+      issues.push({
+        code: "empty_file",
+        message: "O arquivo de lote esta vazio.",
+        severity: "critical",
+      });
+
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues,
+          totalRows: 0,
+          validRows: 0,
+        }),
+      };
+    }
+
     let parsedJson: unknown;
 
     try {
@@ -502,6 +597,30 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
       rows.push(parsed.data);
     });
   } else {
+    const text = await file.text();
+    if (!text.trim()) {
+      issues.push({
+        code: "empty_file",
+        message: "O arquivo de lote esta vazio.",
+        severity: "critical",
+      });
+
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues,
+          totalRows: 0,
+          validRows: 0,
+        }),
+      };
+    }
+
     const csvRows = parseCsvRows(text);
     sourceTotalRows = csvRows.length;
     const headerRow = text

@@ -6,8 +6,9 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
 import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac";
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
-import { auditLogs, userTenantMappings } from "@/lib/db/schema";
+import { userTenantMappings } from "@/lib/db/schema";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
 import { getSupportCase, SupportCaseError } from "@/modules/support/application/get-support-case";
 
 const paramsSchema = z.object({ caseId: z.string().uuid() });
@@ -43,6 +44,18 @@ function jsonResponse<T>(
   return withCorrelationHeader(NextResponse.json(body, init), correlationId);
 }
 
+async function recordPlaytestEvent(params: Parameters<typeof writePlaytestEvent>[0]) {
+  try {
+    await writePlaytestEvent(params);
+  } catch (error) {
+    console.error("[playtest.support.case] Falha ao registrar evento", error);
+  }
+}
+
+function playtestDetails(role: RbacRole | undefined, details: Record<string, unknown>) {
+  return role ? { actor_role: role, ...details } : details;
+}
+
 async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
   const mappings = await db
     .select({ role: userTenantMappings.role })
@@ -53,24 +66,6 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
   return mappings[0]?.role as RbacRole | undefined;
 }
 
-async function writeCaseOpenedAudit(params: {
-  tenantId: string;
-  actorId: string;
-  correlationId: string;
-  caseId: string;
-}) {
-  await db.insert(auditLogs).values({
-    tenantId: params.tenantId,
-    actorId: params.actorId,
-    correlationId: params.correlationId,
-    action: "support.case.opened.v1",
-    resourceType: "support_case",
-    resourceId: params.caseId,
-    status: "success",
-    details: { case_id: params.caseId },
-  });
-}
-
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ caseId: string }> },
@@ -78,6 +73,14 @@ export async function GET(
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
   const parsedParams = paramsSchema.safeParse(await context.params);
   if (!parsedParams.success) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      status: "failure",
+      details: { cause: "validation_error", issues: parsedParams.error.issues },
+    });
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "caseId invalido.", correlationId, {
         issues: parsedParams.error.issues,
@@ -89,6 +92,14 @@ export async function GET(
 
   const parsedQuery = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
   if (!parsedQuery.success) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      status: "failure",
+      details: { cause: "validation_error", issues: parsedQuery.error.issues },
+    });
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "Parametros de consulta invalidos.", correlationId, {
         issues: parsedQuery.error.issues,
@@ -100,6 +111,14 @@ export async function GET(
 
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionToken) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao ausente" },
+    });
     return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
       status: 401,
     });
@@ -107,6 +126,14 @@ export async function GET(
 
   const session = await validateSession(sessionToken);
   if (!session) {
+    await writePlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao invalida ou expirada" },
+    });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
       correlationId,
@@ -116,6 +143,15 @@ export async function GET(
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      status: "failure",
+      details: { cause: "forbidden", reason: "Usuario sem permissao no tenant" },
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
       correlationId,
@@ -131,6 +167,18 @@ export async function GET(
       action: RBAC_ACTIONS.tenantRead,
     });
   } catch (error) {
+    if (role === "rh_gestor") {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.support.case.friction",
+        resourceType: "support_case",
+        resourceId: parsedParams.data.caseId,
+        status: "failure",
+        details: playtestDetails(role, { cause: "forbidden", reason: (error as Error).message }),
+      });
+    }
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
         cause: (error as Error).message,
@@ -142,6 +190,16 @@ export async function GET(
 
   const allowedRoles: RbacRole[] = ["suporte", "rh_gestor", "admin_plataforma"];
   if (!allowedRoles.includes(role)) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: role === "rh_gestor" ? "playtest.rh.support.case.view" : "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      resourceId: parsedParams.data.caseId,
+      status: role === "rh_gestor" ? "success" : "failure",
+      details: playtestDetails(role, { cause: "forbidden", reason: "Perfil sem permissao para consultar suporte" }),
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Perfil sem permissao para consultar caso de suporte.", correlationId),
       correlationId,
@@ -160,22 +218,60 @@ export async function GET(
       userId: parsedQuery.data.user_id,
     });
 
-    await writeCaseOpenedAudit({
+    await recordPlaytestEvent({
       tenantId: session.tenantId,
       actorId: session.userId,
       correlationId,
-      caseId: parsedParams.data.caseId,
+      action: "playtest.rh.support.case.view",
+      resourceType: "support_case",
+      resourceId: parsedParams.data.caseId,
+      status: "success",
+      details: playtestDetails(role, {
+        case_id: parsedParams.data.caseId,
+        batch_id: supportCase.links.batch_id,
+        document_id: supportCase.links.document_id,
+        user_id: supportCase.links.user_id,
+      }),
     });
 
     return jsonResponse(successResponse(supportCase, correlationId, session.tenantId), correlationId);
   } catch (error) {
     if (error instanceof SupportCaseError) {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.support.case.friction",
+        resourceType: "support_case",
+        resourceId: parsedParams.data.caseId,
+        status: "failure",
+        details: playtestDetails(role, {
+          cause: "domain_error",
+          code: error.code,
+          case_id: parsedParams.data.caseId,
+        }),
+      });
       return jsonResponse(
         errorResponse(error.code, error.message, correlationId, error.details),
         correlationId,
         { status: error.statusCode },
       );
     }
+
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.support.case.friction",
+      resourceType: "support_case",
+      resourceId: parsedParams.data.caseId,
+      status: "failure",
+      details: playtestDetails(role, {
+        cause: "internal_error",
+        case_id: parsedParams.data.caseId,
+        error: (error as Error).message,
+      }),
+    });
 
     return jsonResponse(
       errorResponse("INTERNAL_SERVER_ERROR", "Falha ao consultar caso de suporte.", correlationId),

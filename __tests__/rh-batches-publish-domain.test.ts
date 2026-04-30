@@ -2,20 +2,37 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { publishBatch, BatchPublicationError } from "@/modules/batches/application/publish-batch";
 
 const {
+  EmployeeDocumentPublicationError,
   loadBatchPublicationSnapshotMock,
   loadBatchPublicationExceptionsMock,
   markBatchPublicationStartingMock,
   markBatchPublicationSucceededMock,
   markBatchPublicationFailedMock,
+  publishEmployeeDocumentsForBatchMock,
   writeBatchPublicationAuditMock,
   buildDomainEventMock,
   publishDomainEventMock,
 } = vi.hoisted(() => ({
+  EmployeeDocumentPublicationError: class extends Error {
+    constructor(
+      public readonly code:
+        | "REFERENCE_CODE_REQUIRED"
+        | "PUBLICATION_TARGET_NOT_FOUND"
+        | "PUBLICATION_SOURCE_ARTIFACT_MISSING"
+        | "PUBLICATION_ARTIFACT_UNAVAILABLE",
+      message: string,
+      public readonly details?: Record<string, unknown>,
+    ) {
+      super(message);
+      this.name = "EmployeeDocumentPublicationError";
+    }
+  },
   loadBatchPublicationSnapshotMock: vi.fn(),
   loadBatchPublicationExceptionsMock: vi.fn(),
   markBatchPublicationStartingMock: vi.fn(),
   markBatchPublicationSucceededMock: vi.fn(),
   markBatchPublicationFailedMock: vi.fn(),
+  publishEmployeeDocumentsForBatchMock: vi.fn(),
   writeBatchPublicationAuditMock: vi.fn(),
   buildDomainEventMock: vi.fn((event) => event),
   publishDomainEventMock: vi.fn(async (event) => event),
@@ -31,6 +48,11 @@ vi.mock("@/modules/batches/infrastructure/batch-repository", () => ({
 
 vi.mock("@/lib/rh/batches/publish-audit", () => ({
   writeBatchPublicationAudit: writeBatchPublicationAuditMock,
+}));
+
+vi.mock("@/lib/documents/publish-employee-documents", () => ({
+  EmployeeDocumentPublicationError,
+  publishEmployeeDocumentsForBatch: publishEmployeeDocumentsForBatchMock,
 }));
 
 vi.mock("@/lib/events/publisher", () => ({
@@ -55,6 +77,17 @@ describe("publish batch domain", () => {
         tenantId: "11111111-1111-4111-8111-111111111111",
         validationStatus: "validated",
         routingStatus: "completed",
+        routingManifest: [
+          {
+            document_id: "doc-1",
+            employee_identifier: "REF-001",
+            codigo_colaborador: "REF-001",
+            nome_normalizado: null,
+            match_strategy: "codigo_colaborador",
+            document_type: "holerite",
+            period_ref: "2026-03",
+          },
+        ],
         routingTotalCount: 2,
         routingMatchedCount: 2,
         routingPendingCount: 0,
@@ -75,6 +108,17 @@ describe("publish batch domain", () => {
         tenantId: "11111111-1111-4111-8111-111111111111",
         validationStatus: "validated",
         routingStatus: "completed",
+        routingManifest: [
+          {
+            document_id: "doc-1",
+            employee_identifier: "REF-001",
+            codigo_colaborador: "REF-001",
+            nome_normalizado: null,
+            match_strategy: "codigo_colaborador",
+            document_type: "holerite",
+            period_ref: "2026-03",
+          },
+        ],
         routingTotalCount: 2,
         routingMatchedCount: 2,
         routingPendingCount: 0,
@@ -93,11 +137,23 @@ describe("publish batch domain", () => {
 
     loadBatchPublicationExceptionsMock.mockResolvedValue([]);
     writeBatchPublicationAuditMock.mockResolvedValue(undefined);
+    publishEmployeeDocumentsForBatchMock.mockResolvedValue({ publishedCount: 1 });
     markBatchPublicationStartingMock.mockResolvedValue({
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       tenantId: "11111111-1111-4111-8111-111111111111",
       validationStatus: "validated",
       routingStatus: "completed",
+      routingManifest: [
+        {
+          document_id: "doc-1",
+          employee_identifier: "REF-001",
+          codigo_colaborador: "REF-001",
+          nome_normalizado: null,
+          match_strategy: "codigo_colaborador",
+          document_type: "holerite",
+          period_ref: "2026-03",
+        },
+      ],
       routingTotalCount: 2,
       routingMatchedCount: 2,
       routingPendingCount: 0,
@@ -136,8 +192,15 @@ describe("publish batch domain", () => {
       expect.objectContaining({ currentPublicationAttempts: 0 }),
       transactionClient,
     );
+    expect(publishEmployeeDocumentsForBatchMock.mock.invocationCallOrder[0]).toBeLessThan(
+      markBatchPublicationSucceededMock.mock.invocationCallOrder[0],
+    );
     expect(markBatchPublicationSucceededMock).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: "idem-123456" }),
+      transactionClient,
+    );
+    expect(publishEmployeeDocumentsForBatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
       transactionClient,
     );
     expect(writeBatchPublicationAuditMock).toHaveBeenCalledWith(
@@ -153,6 +216,143 @@ describe("publish batch domain", () => {
     );
   });
 
+  it("maps publication target failures to controlled batch errors and records failed state", async () => {
+    publishEmployeeDocumentsForBatchMock.mockRejectedValue(
+      new EmployeeDocumentPublicationError(
+        "PUBLICATION_TARGET_NOT_FOUND",
+        "Documento nao pode ser publicado sem colaborador ativado e vinculado.",
+      ),
+    );
+
+    await expect(
+      publishBatch(
+        {
+          tenantId: "11111111-1111-4111-8111-111111111111",
+          batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          correlationId: "11111111-1111-4111-8111-111111111111",
+          idempotencyKey: "idem-123456",
+        },
+        dbClient as never,
+      ),
+    ).rejects.toMatchObject({
+      name: "BatchPublicationError",
+      code: "PUBLICATION_TARGET_NOT_FOUND",
+      statusCode: 409,
+    });
+
+    expect(markBatchPublicationFailedMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        errorMessage: "Documento nao pode ser publicado sem colaborador ativado e vinculado.",
+      }),
+      dbClient,
+    );
+  });
+
+  it("maps artifact availability failures to operational 503 errors", async () => {
+    loadBatchPublicationSnapshotMock.mockReset();
+    loadBatchPublicationSnapshotMock.mockResolvedValueOnce({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      tenantId: "11111111-1111-4111-8111-111111111111",
+      validationStatus: "validated",
+      routingStatus: "completed",
+      routingManifest: [
+        {
+          document_id: "doc-1",
+          employee_identifier: "REF-001",
+          codigo_colaborador: "REF-001",
+          nome_normalizado: null,
+          match_strategy: "codigo_colaborador",
+          document_type: "holerite",
+          period_ref: "2026-03",
+        },
+      ],
+      routingTotalCount: 2,
+      routingMatchedCount: 2,
+      routingPendingCount: 0,
+      routingFailedCount: 0,
+      routingAmbiguousCount: 0,
+      routingBlockedReason: null,
+      routingProcessedAt: "2026-04-13T12:00:00.000Z",
+      publicationStatus: "pending",
+      publicationAttempts: 0,
+      publishedAt: null,
+      publishedBy: null,
+      lastPublicationCorrelationId: null,
+      lastPublicationIdempotencyKey: null,
+      lastPublicationError: null,
+    });
+    loadBatchPublicationExceptionsMock.mockReset();
+    loadBatchPublicationExceptionsMock.mockResolvedValue([]);
+    markBatchPublicationStartingMock.mockReset();
+    markBatchPublicationStartingMock.mockResolvedValue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      tenantId: "11111111-1111-4111-8111-111111111111",
+      validationStatus: "validated",
+      routingStatus: "completed",
+      routingManifest: [
+        {
+          document_id: "doc-1",
+          employee_identifier: "REF-001",
+          codigo_colaborador: "REF-001",
+          nome_normalizado: null,
+          match_strategy: "codigo_colaborador",
+          document_type: "holerite",
+          period_ref: "2026-03",
+        },
+      ],
+      routingTotalCount: 2,
+      routingMatchedCount: 2,
+      routingPendingCount: 0,
+      routingFailedCount: 0,
+      routingAmbiguousCount: 0,
+      routingBlockedReason: null,
+      routingProcessedAt: "2026-04-13T12:00:00.000Z",
+      publicationStatus: "publishing",
+      publicationAttempts: 1,
+      publishedAt: null,
+      publishedBy: null,
+      lastPublicationCorrelationId: "11111111-1111-4111-8111-111111111111",
+      lastPublicationIdempotencyKey: "idem-123456",
+      lastPublicationError: null,
+    });
+    markBatchPublicationFailedMock.mockReset();
+    markBatchPublicationFailedMock.mockResolvedValue(undefined);
+    publishEmployeeDocumentsForBatchMock.mockImplementationOnce(async () => {
+      throw new EmployeeDocumentPublicationError(
+        "PUBLICATION_ARTIFACT_UNAVAILABLE",
+        "Nao foi possivel persistir artefato PDF individual do colaborador.",
+      );
+    });
+
+    await expect(
+      publishBatch(
+        {
+          tenantId: "11111111-1111-4111-8111-111111111111",
+          batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          correlationId: "11111111-1111-4111-8111-111111111111",
+          idempotencyKey: "idem-123456",
+        },
+        dbClient as never,
+      ),
+    ).rejects.toMatchObject({
+      name: "BatchPublicationError",
+      code: "PUBLICATION_ARTIFACT_UNAVAILABLE",
+      statusCode: 503,
+    });
+
+    expect(publishEmployeeDocumentsForBatchMock).toHaveBeenCalledTimes(1);
+    expect(markBatchPublicationFailedMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        errorMessage: "Nao foi possivel persistir artefato PDF individual do colaborador.",
+      }),
+      dbClient,
+    );
+  });
+
   it("returns the same logical result on idempotent hits", async () => {
     loadBatchPublicationSnapshotMock.mockReset();
     loadBatchPublicationSnapshotMock.mockResolvedValueOnce({
@@ -160,6 +360,7 @@ describe("publish batch domain", () => {
       tenantId: "11111111-1111-4111-8111-111111111111",
       validationStatus: "validated",
       routingStatus: "completed",
+      routingManifest: [],
       routingTotalCount: 2,
       routingMatchedCount: 2,
       routingPendingCount: 0,
@@ -203,6 +404,7 @@ describe("publish batch domain", () => {
       tenantId: "11111111-1111-4111-8111-111111111111",
       validationStatus: "validated",
       routingStatus: "completed",
+      routingManifest: [],
       routingTotalCount: 2,
       routingMatchedCount: 2,
       routingPendingCount: 0,
@@ -247,6 +449,7 @@ describe("publish batch domain", () => {
         tenantId: "11111111-1111-4111-8111-111111111111",
         validationStatus: "validated",
         routingStatus: "completed",
+        routingManifest: [],
         routingTotalCount: 2,
         routingMatchedCount: 2,
         routingPendingCount: 0,
@@ -267,6 +470,7 @@ describe("publish batch domain", () => {
         tenantId: "11111111-1111-4111-8111-111111111111",
         validationStatus: "validated",
         routingStatus: "completed",
+        routingManifest: [],
         routingTotalCount: 2,
         routingMatchedCount: 2,
         routingPendingCount: 0,

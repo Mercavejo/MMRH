@@ -3,7 +3,8 @@ import { db } from "@/lib/db/client";
 import { auditLogs, externalIdentifierMappings } from "@/lib/db/schema";
 import type { AuthorizedExternalSource, ExternalIdentifierMappingCandidate } from "../domain/external-ingestion";
 
-type DbLike = typeof db;
+type TransactionClient = Pick<typeof db, "select" | "update" | "insert">;
+type DbLike = TransactionClient & Pick<typeof db, "transaction">;
 
 export async function listActiveExternalIdentifierMappings(input: {
   tenantId: string;
@@ -59,7 +60,7 @@ export async function upsertExternalIdentifierMappingRuleInDb(input: {
   change_type: "create" | "update" | "disable";
   changed_at: string;
 }> {
-  const runUpsert = async (client: DbLike) => {
+  const runUpsert = async (client: TransactionClient) => {
     const latestRows = await client
       .select({
         mappingVersion: externalIdentifierMappings.mappingVersion,
@@ -159,5 +160,5 @@ export async function upsertExternalIdentifierMappingRuleInDb(input: {
     };
   };
 
-  return dbClient.transaction(async (tx) => runUpsert(tx as DbLike));
+  return dbClient.transaction(async (tx) => runUpsert(tx));
 }

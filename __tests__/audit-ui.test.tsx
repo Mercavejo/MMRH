@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { StatusTimeline } from "@/components/audit/status-timeline";
-import { RhAuditPageView } from "@/app/(rh)/auditoria/page";
+import { RhAuditPageView } from "@/app/rh/auditoria/RhAuditPageView";
 
 describe("audit ui", () => {
   it("renders timeline events in audit detail", () => {
@@ -31,6 +31,7 @@ describe("audit ui", () => {
           batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           document_id: "",
           user_id: "",
+          case_id: "",
           page: 1,
           page_size: 20,
         }}
@@ -49,11 +50,13 @@ describe("audit ui", () => {
         ]}
         timeline={[]}
         pagination={{ page: 1, page_size: 20, total: 1, total_pages: 1 }}
+        supportCase={null}
+        supportCaseError={null}
       />,
     );
 
-    expect(html).toContain("Trilha de auditoria");
-    expect(html).toContain("Filtrar eventos");
+    expect(html).toContain("Trilha de Auditoria");
+    expect(html).toContain("Filtros de Pesquisa");
     expect(html).toContain("rh.batch.import.validated.v1");
   });
 });

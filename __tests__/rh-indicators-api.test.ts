@@ -166,7 +166,7 @@ describe("rh indicators api", () => {
   });
 
   it("returns 403 when role is unauthorized", async () => {
-    dbLimitMock.mockResolvedValue([{ role: "suporte" }]);
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
 
     const request = new NextRequest("http://localhost/api/v1/rh/indicators", {
       method: "GET",
@@ -177,6 +177,13 @@ describe("rh indicators api", () => {
 
     expect(response.status).toBe(403);
     expect(getOperationalIndicatorsMock).not.toHaveBeenCalled();
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.boundary.gestor.blocked",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "rh_gestor" }),
+      }),
+    );
   });
 
   it("surfaces domain validation error with mapped status", async () => {

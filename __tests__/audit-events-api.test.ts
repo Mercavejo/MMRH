@@ -10,6 +10,7 @@ const {
   dbWhereMock,
   dbLimitMock,
   listAuditEventsMock,
+  writePlaytestEventMock,
   AuditEventsError,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
   listAuditEventsMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
   AuditEventsError: class extends Error {
     constructor(
       public readonly code: string,
@@ -50,6 +52,10 @@ vi.mock("@/modules/audit/application/list-audit-events", () => ({
   AuditEventsError,
 }));
 
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
+}));
+
 import { GET } from "@/app/api/v1/audit-events/route";
 
 describe("audit events api", () => {
@@ -62,6 +68,7 @@ describe("audit events api", () => {
     });
 
     dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
+    writePlaytestEventMock.mockResolvedValue(undefined);
 
     listAuditEventsMock.mockResolvedValue({
       events: [
@@ -118,6 +125,13 @@ describe("audit events api", () => {
         batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       }),
     );
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.audit.view",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "admin_plataforma" }),
+      }),
+    );
   });
 
   it("returns 400 when period is invalid", async () => {
@@ -146,7 +160,7 @@ describe("audit events api", () => {
   });
 
   it("returns 403 when role is unauthorized", async () => {
-    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
 
     const request = new NextRequest("http://localhost/api/v1/audit-events", {
       method: "GET",
@@ -157,6 +171,13 @@ describe("audit events api", () => {
 
     expect(response.status).toBe(403);
     expect(listAuditEventsMock).not.toHaveBeenCalled();
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.boundary.gestor.blocked",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "rh_gestor" }),
+      }),
+    );
   });
 
   it("surfaces domain errors with correct status", async () => {

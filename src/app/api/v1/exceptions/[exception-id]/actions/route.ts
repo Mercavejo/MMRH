@@ -38,10 +38,11 @@ function jsonResponse(body: ReturnType<typeof errorResponse> | ReturnType<typeof
 
 export async function POST(
   request: NextRequest,
-  context: { params: Promise<{ exceptionId: string }> },
+  context: { params: Promise<{ "exception-id"?: string; exceptionId?: string }> },
 ) {
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
-  const paramsParsed = paramsSchema.safeParse(await context.params);
+  const params = await context.params;
+  const paramsParsed = paramsSchema.safeParse({ exceptionId: params.exceptionId ?? params["exception-id"] });
 
   if (!paramsParsed.success) {
     return jsonResponse(
@@ -90,8 +91,8 @@ export async function POST(
     return jsonResponse(errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, { cause: (error as Error).message }), correlationId, { status: 403 });
   }
 
-  if (role !== "rh_operator") {
-    return jsonResponse(errorResponse("FORBIDDEN", "Somente RH operador pode registrar acoes corretivas.", correlationId), correlationId, { status: 403 });
+  if (role !== "admin_plataforma") {
+    return jsonResponse(errorResponse("FORBIDDEN", "Somente admin Mercavejo pode registrar acoes corretivas.", correlationId), correlationId, { status: 403 });
   }
 
   const ownership = await db

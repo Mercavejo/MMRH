@@ -69,6 +69,10 @@ async function resolveTenantRole(userId: string, tenantId: string): Promise<Rbac
   return mappings[0]?.role as RbacRole | undefined;
 }
 
+function playtestDetails(role: RbacRole | undefined, details: Record<string, unknown>) {
+  return role ? { actor_role: role, ...details } : details;
+}
+
 export async function GET(request: NextRequest) {
   const startTime = performance.now();
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
@@ -113,7 +117,7 @@ export async function GET(request: NextRequest) {
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Usuario sem permissao no tenant" } });
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: playtestDetails(role, { cause: "forbidden", reason: "Usuario sem permissao no tenant" }) });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
       correlationId,
@@ -130,7 +134,7 @@ export async function GET(request: NextRequest) {
       action: RBAC_ACTIONS.tenantRead,
     });
   } catch (error) {
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Acesso negado pelo RBAC" } });
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: playtestDetails(role, { cause: "forbidden", reason: "Acesso negado pelo RBAC" }) });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
         cause: (error as Error).message,
@@ -143,7 +147,20 @@ export async function GET(request: NextRequest) {
 
   const allowedRoles: RbacRole[] = ["admin_plataforma"];
   if (!allowedRoles.includes(role)) {
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "forbidden", reason: "Perfil sem permissao" } });
+    await writePlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: role === "rh_gestor" ? "playtest.rh.boundary.gestor.blocked" : "playtest.rh.indicators.friction",
+      resourceType: "indicators",
+      resourceId: "/api/v1/rh/indicators",
+      status: role === "rh_gestor" ? "success" : "failure",
+      details: playtestDetails(role, {
+        cause: "forbidden",
+        reason: "Perfil sem permissao",
+        resource_path: "/api/v1/rh/indicators",
+      }),
+    });
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",
@@ -165,12 +182,12 @@ export async function GET(request: NextRequest) {
       organizationalUnit: parsedQuery.data.organizational_unit,
     });
 
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.view", resourceType: "indicators", status: "success", details: { period: { from: parsedQuery.data.from, to: parsedQuery.data.to } } });
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.view", resourceType: "indicators", status: "success", details: playtestDetails(role, { period: { from: parsedQuery.data.from, to: parsedQuery.data.to } }) });
 
     return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId, startTime);
   } catch (error) {
     if (error instanceof OperationalIndicatorsError) {
-      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "domain_error", code: error.code } });
+      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: playtestDetails(role, { cause: "domain_error", code: error.code }) });
       return jsonResponse(
         errorResponse(error.code, error.message, correlationId, error.details),
         correlationId,
@@ -179,7 +196,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: { cause: "internal_error", error: (error as Error).message } });
+    await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.indicators.friction", resourceType: "indicators", status: "failure", details: playtestDetails(role, { cause: "internal_error", error: (error as Error).message }) });
     return jsonResponse(
       errorResponse(
         "INTERNAL_SERVER_ERROR",

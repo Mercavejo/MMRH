@@ -14,6 +14,7 @@ const {
   getExceptionDetailMock,
   updateExceptionStateMock,
   recordCorrectiveExceptionActionMock,
+  writePlaytestEventMock,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
   dbSelectMock: vi.fn(),
@@ -24,6 +25,7 @@ const {
   getExceptionDetailMock: vi.fn(),
   updateExceptionStateMock: vi.fn(),
   recordCorrectiveExceptionActionMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
@@ -53,6 +55,10 @@ vi.mock("@/modules/exceptions/application/record-exception-action", () => ({
   recordCorrectiveExceptionAction: recordCorrectiveExceptionActionMock,
 }));
 
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
+}));
+
 import { GET as GET_BATCH_EXCEPTIONS } from "@/app/api/v1/batches/[batch-id]/exceptions/route";
 import { GET as GET_EXCEPTION, PATCH as PATCH_EXCEPTION } from "@/app/api/v1/exceptions/[exception-id]/route";
 import { POST as POST_EXCEPTION_ACTION } from "@/app/api/v1/exceptions/[exception-id]/actions/route";
@@ -65,8 +71,9 @@ describe("exception api", () => {
       userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       tenantId: SESSION_TENANT_ID,
     });
+    writePlaytestEventMock.mockResolvedValue(undefined);
 
-    dbLimitMock.mockResolvedValue([{ role: "rh_operator" }]);
+    dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
 
     listBatchExceptionsMock.mockResolvedValue({
       exceptions: [
@@ -196,11 +203,39 @@ describe("exception api", () => {
     });
 
     expect(response.status).toBe(401);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.exceptions.queue.friction",
+        status: "failure",
+      }),
+    );
+  });
+
+  it("records queue evidence for admin exception list", async () => {
+    const request = new NextRequest(
+      "http://localhost/api/v1/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/exceptions",
+      {
+        headers: { cookie: "session_id=token" },
+      },
+    );
+
+    const response = await GET_BATCH_EXCEPTIONS(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.exceptions.queue.view",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "admin_plataforma" }),
+      }),
+    );
   });
 
   it("returns detail with action history and tenant context", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "admin_plataforma" }])
       .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
 
     const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
@@ -221,7 +256,7 @@ describe("exception api", () => {
 
   it("blocks access to exceptions from another tenant", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "admin_plataforma" }])
       .mockResolvedValueOnce([{ tenantId: OTHER_TENANT_ID }]);
 
     const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
@@ -237,7 +272,7 @@ describe("exception api", () => {
 
   it("updates exception state and returns transition metadata", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "admin_plataforma" }])
       .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
 
     const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1", {
@@ -267,7 +302,7 @@ describe("exception api", () => {
 
   it("records corrective actions with validation", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "admin_plataforma" }])
       .mockResolvedValueOnce([{ tenantId: SESSION_TENANT_ID }]);
 
     const request = new NextRequest("http://localhost/api/v1/exceptions/exc-1/actions", {
@@ -313,5 +348,24 @@ describe("exception api", () => {
     });
 
     expect(response.status).toBe(400);
+  });
+
+  it("blocks exception list for non-admin tenant roles", async () => {
+    dbLimitMock.mockResolvedValueOnce([{ role: "rh_operator" }]);
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/exceptions",
+      {
+        headers: { cookie: "session_id=token" },
+      },
+    );
+
+    const response = await GET_BATCH_EXCEPTIONS(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error.message).toBe("Somente admin Mercavejo pode consultar excecoes.");
   });
 });

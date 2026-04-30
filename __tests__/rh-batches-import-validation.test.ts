@@ -1,13 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { validateBatchImportFile } from "@/lib/rh/batches/import-validation";
 
-const { pdfParseMock } = vi.hoisted(() => ({
-  pdfParseMock: vi.fn(),
+const { getDocumentProxyMock, extractTextMock } = vi.hoisted(() => ({
+  getDocumentProxyMock: vi.fn(),
+  extractTextMock: vi.fn(),
 }));
 
-vi.mock("pdf-parse", () => ({
-  default: pdfParseMock,
+vi.mock("unpdf", () => ({
+  getDocumentProxy: getDocumentProxyMock,
+  extractText: extractTextMock,
 }));
+
+function mockParsedPdf(input: { text: string; numpages: number }) {
+  const documentProxy = { id: "pdf-proxy" };
+  getDocumentProxyMock.mockResolvedValue(documentProxy);
+  extractTextMock.mockResolvedValue({
+    totalPages: input.numpages,
+    text: input.text.split("\f"),
+  });
+}
 
 describe("rh batch import validation", () => {
   beforeEach(() => {
@@ -93,7 +104,7 @@ describe("rh batch import validation", () => {
   });
 
   it("accepts multipage pdf and itemizes each page as one routing row", async () => {
-    pdfParseMock.mockResolvedValue({
+    mockParsedPdf({
       text: [
         "codigo_colaborador: EMP-001\nperiodo: 2026-03\nnome: Ana Souza",
         "codigo_colaborador: EMP-002\nperiodo: 2026-03\nnome: Bruno Lima",
@@ -118,7 +129,7 @@ describe("rh batch import validation", () => {
   });
 
   it("blocks password protected pdf with explicit rejection code", async () => {
-    pdfParseMock.mockRejectedValue(new Error("Encrypted PDF - password required"));
+    getDocumentProxyMock.mockRejectedValue(new Error("Encrypted PDF - password required"));
 
     const file = new File(["%PDF-1.4 encrypted"], "protegido.pdf", {
       type: "application/pdf",
@@ -132,7 +143,7 @@ describe("rh batch import validation", () => {
   });
 
   it("blocks pdf over operational page limit", async () => {
-    pdfParseMock.mockResolvedValue({
+    mockParsedPdf({
       text: "pagina",
       numpages: 501,
     });
@@ -148,7 +159,7 @@ describe("rh batch import validation", () => {
   });
 
   it("blocks pdf pages without a valid period", async () => {
-    pdfParseMock.mockResolvedValue({
+    mockParsedPdf({
       text: "codigo_colaborador: EMP-001\nnome: Ana Souza",
       numpages: 1,
     });
@@ -162,5 +173,50 @@ describe("rh batch import validation", () => {
     expect(result.is_valid).toBe(false);
     expect(result.summary.issues.some((issue) => issue.code === "MISSING_PERIOD_REF")).toBe(true);
     expect(result.rows).toHaveLength(0);
+  });
+
+  it("extracts employee reference beside the collaborator name from the real payroll layout", async () => {
+    mockParsedPdf({
+      text: [
+        "Recibo de Pagamento de Salário\t15.605.489/0001-00",
+        "FRS MONTAGENS E MANUTENÇÃO INDUSTRIAL LTDA \tdezembro de 2023",
+        "Avenida Doutora Maria Inês Dal'Antonia C, 387",
+        "0212 MOISÉS IGNÁCIO GARCIA \t9113-05 LIDER MANUTENÇÃO INDUSTRIAL",
+      ].join("\n"),
+      numpages: 1,
+    });
+
+    const file = new File(["%PDF-1.4"], "holerite-real.pdf", {
+      type: "application/pdf",
+    });
+
+    const result = await validateBatchImportFile(file);
+
+    expect(result.is_valid).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].employee_identifier).toBe("0212");
+    expect(result.rows[0].codigo_colaborador).toBe("0212");
+    expect(result.rows[0].nome_normalizado).toBe("moises ignacio garcia");
+    expect(result.rows[0].period_ref).toBe("2023-12");
+    expect(result.rows[0].document_type).toBe("holerite");
+  });
+
+  it("does not depend on file.text() for pdf validation", async () => {
+    mockParsedPdf({
+      text: "codigo_colaborador: EMP-001\nperiodo: 2026-03\nnome: Ana Souza",
+      numpages: 1,
+    });
+
+    const file = new File(["%PDF-1.4"], "relatorio-geral.pdf", {
+      type: "application/pdf",
+    });
+    file.text = vi.fn(async () => {
+      throw new Error("pdf text should not be read before binary parsing");
+    });
+
+    const result = await validateBatchImportFile(file);
+
+    expect(result.is_valid).toBe(true);
+    expect(file.text).not.toHaveBeenCalled();
   });
 });

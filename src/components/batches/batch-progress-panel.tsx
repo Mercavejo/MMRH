@@ -211,7 +211,7 @@ export function BatchProgressPanel(props: {
                   <Chip label={`Lote: ${summary.batch_id.slice(-6).toUpperCase()}`} variant="outlined" />
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
-                  Consulte o historico do lote em "Processamento de Lotes" ou abra um chamado tecnico se precisar de apoio da Mercavejo.
+                  Consulte o historico do lote em &quot;Processamento de Lotes&quot; ou abra um chamado tecnico se precisar de apoio da Mercavejo.
                 </Typography>
               </Stack>
             </Paper>

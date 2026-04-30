@@ -31,6 +31,9 @@ describe("getDownloadableDocument", () => {
         documentType: "holerite",
         periodRef: "2026-03",
         status: "published",
+        storageKey: "tenants/tenant-a/documents/doc-1/page-1.pdf",
+        fileName: "holerite-2026-03.pdf",
+        mimeType: "application/pdf",
       },
     ]);
 
@@ -46,8 +49,7 @@ describe("getDownloadableDocument", () => {
       period_ref: "2026-03",
       mime_type: "application/pdf",
       file_name: "holerite-2026-03.pdf",
-      storage_key:
-        "documents/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.pdf",
+      storage_key: "tenants/tenant-a/documents/doc-1/page-1.pdf",
     });
   });
 
@@ -62,6 +64,9 @@ describe("getDownloadableDocument", () => {
           documentType: "holerite",
           periodRef: "2026-03",
           status,
+          storageKey: "tenants/tenant-a/documents/doc-1/page-1.pdf",
+          fileName: "holerite-2026-03.pdf",
+          mimeType: "application/pdf",
         },
       ]);
 
@@ -88,6 +93,32 @@ describe("getDownloadableDocument", () => {
       }, dbClient as never),
     ).rejects.toMatchObject<Partial<DownloadEligibilityError>>({
       code: "DOCUMENT_NOT_FOUND",
+    });
+  });
+
+  it("blocks published metadata without real artifact reference", async () => {
+    const dbClient = makeDbClient([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        tenantId: "11111111-1111-4111-8111-111111111111",
+        userId: "22222222-2222-4222-8222-222222222222",
+        documentType: "holerite",
+        periodRef: "2026-03",
+        status: "published",
+        storageKey: null,
+        fileName: null,
+        mimeType: null,
+      },
+    ]);
+
+    await expect(
+      getDownloadableDocument({
+        documentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        tenantId: "11111111-1111-4111-8111-111111111111",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }, dbClient as never),
+    ).rejects.toMatchObject<Partial<DownloadEligibilityError>>({
+      code: "DOCUMENT_ARTIFACT_UNAVAILABLE",
     });
   });
 });

@@ -36,6 +36,11 @@ export function buildBatchImportFormData(file: File): FormData {
   return formData;
 }
 
+function getApiErrorMessage(payload: { error?: { message?: string | null } | null }, fallback: string) {
+  const message = payload.error?.message?.trim();
+  return message && message.length > 0 ? message : fallback;
+}
+
 export function BatchImportPageView(props: {
   selectedFile: File | null;
   feedback: BatchImportFeedback;
@@ -165,60 +170,73 @@ export default function RhBatchImportPage() {
     const formData = buildBatchImportFormData(selectedFile);
     formData.append("idempotency_key", idempotencyKey);
 
-    const response = await fetch("/api/v1/rh/batches", {
-      method: "POST",
-      body: formData,
-    });
+    try {
+      const response = await fetch("/api/v1/rh/batches", {
+        method: "POST",
+        body: formData,
+      });
 
-    const payload = (await response.json()) as {
-      data: {
-        batch_id: string;
-        validation_status: "validated" | "blocked";
-        validation_summary: BatchImportValidationSummary;
-        original_filename: string;
-      } | null;
-      error: { message: string; details?: { summary?: BatchImportValidationSummary } } | null;
-      meta: {
-        correlation_id: string;
-        timestamp?: string;
-        tenant_id?: string;
+      const payload = (await response.json()) as {
+        data: {
+          batch_id: string;
+          validation_status: "validated" | "blocked";
+          validation_summary: BatchImportValidationSummary;
+          original_filename: string;
+        } | null;
+        error: { message: string; details?: { summary?: BatchImportValidationSummary } } | null;
+        meta: {
+          correlation_id: string;
+          timestamp?: string;
+          tenant_id?: string;
+        };
       };
-    };
 
-    if (!response.ok || !payload.data) {
+      if (!response.ok || !payload.data) {
+        const message = getApiErrorMessage(payload, "Nao foi possivel validar o lote.");
+        const validationIssues = payload.error?.details?.summary?.issues ?? [];
+        setRoutingProgress(null);
+        setRoutingNotice({
+          tone: "error",
+          message,
+        });
+        setFeedback({
+          state: "error",
+          message,
+          issues: validationIssues,
+        });
+        return;
+      }
+
+      setRoutingProgress(
+        buildPendingBatchRoutingProgress({
+          batchId: payload.data.batch_id,
+          tenantId: payload.meta.tenant_id ?? "",
+          totalDocuments: payload.data.validation_summary.total_rows,
+        }),
+      );
+      setRoutingNotice({
+        tone: "info",
+        message:
+          "Lote validado. Inicie o roteamento para bloquear ambiguidades antes da publicacao.",
+      });
+
+      setFeedback({
+        state: "success",
+        message: `Lote ${payload.data.original_filename} validado com sucesso.`,
+        batchId: payload.data.batch_id,
+        summary: payload.data.validation_summary,
+      });
+    } catch {
       setRoutingProgress(null);
-      const validationIssues = payload.error?.details?.summary?.issues ?? [];
       setRoutingNotice({
         tone: "error",
-        message: payload.error?.message ?? "Nao foi possivel validar o lote.",
+        message: "Falha de comunicacao ao validar o lote. Tente novamente.",
       });
       setFeedback({
         state: "error",
-        message: payload.error?.message ?? "Nao foi possivel validar o lote.",
-        issues: validationIssues,
+        message: "Falha de comunicacao ao validar o lote. Tente novamente.",
       });
-      return;
     }
-
-    setRoutingProgress(
-      buildPendingBatchRoutingProgress({
-        batchId: payload.data.batch_id,
-        tenantId: payload.meta.tenant_id ?? "",
-        totalDocuments: payload.data.validation_summary.total_rows,
-      }),
-    );
-    setRoutingNotice({
-      tone: "info",
-      message:
-        "Lote validado. Inicie o roteamento para bloquear ambiguidades antes da publicacao.",
-    });
-
-    setFeedback({
-      state: "success",
-      message: `Lote ${payload.data.original_filename} validado com sucesso.`,
-      batchId: payload.data.batch_id,
-      summary: payload.data.validation_summary,
-    });
   }
 
   async function handleProcessRouting() {
@@ -232,33 +250,40 @@ export default function RhBatchImportPage() {
       message: "Roteamento em andamento. O sistema esta bloqueando ambiguidades antes da publicacao.",
     });
 
-    const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/process`, {
-      method: "POST",
-    });
+    try {
+      const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/process`, {
+        method: "POST",
+      });
 
-    const payload = (await response.json()) as {
-      data: BatchRoutingProgress | null;
-      error: { message: string } | null;
-    };
+      const payload = (await response.json()) as {
+        data: BatchRoutingProgress | null;
+        error: { message: string } | null;
+      };
 
-    if (!response.ok || !payload.data) {
+      if (!response.ok || !payload.data) {
+        setRoutingNotice({
+          tone: "error",
+          message: getApiErrorMessage(payload, "Nao foi possivel executar o roteamento."),
+        });
+        return;
+      }
+
+      setRoutingProgress(payload.data);
+      setRoutingNotice({
+        tone: payload.data.routing_status === "blocked" ? "warning" : "success",
+        message:
+          payload.data.routing_status === "blocked"
+            ? "Roteamento concluido com bloqueios por ambiguidade."
+            : "Roteamento concluido com sucesso.",
+      });
+    } catch {
       setRoutingNotice({
         tone: "error",
-        message: payload.error?.message ?? "Nao foi possivel executar o roteamento.",
+        message: "Falha de comunicacao ao executar o roteamento. Tente novamente.",
       });
+    } finally {
       setRoutingInProgress(false);
-      return;
     }
-
-    setRoutingProgress(payload.data);
-    setRoutingNotice({
-      tone: payload.data.routing_status === "blocked" ? "warning" : "success",
-      message:
-        payload.data.routing_status === "blocked"
-          ? "Roteamento concluido com bloqueios por ambiguidade."
-          : "Roteamento concluido com sucesso.",
-    });
-    setRoutingInProgress(false);
   }
 
   async function handleReprocessEligible() {
@@ -272,40 +297,47 @@ export default function RhBatchImportPage() {
       message: "Reprocessamento seletivo em andamento para itens elegiveis.",
     });
 
-    const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/reprocess`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        reprocess_all_eligible: true,
-        idempotency_key: crypto.randomUUID(),
-      }),
-    });
+    try {
+      const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/reprocess`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reprocess_all_eligible: true,
+          idempotency_key: crypto.randomUUID(),
+        }),
+      });
 
-    const payload = (await response.json()) as {
-      data: {
-        total_reprocessed: number;
-        total_remaining: number;
-      } | null;
-      error: { message: string } | null;
-    };
+      const payload = (await response.json()) as {
+        data: {
+          total_reprocessed: number;
+          total_remaining: number;
+        } | null;
+        error: { message: string } | null;
+      };
 
-    if (!response.ok || !payload.data) {
+      if (!response.ok || !payload.data) {
+        setRoutingNotice({
+          tone: "error",
+          message: getApiErrorMessage(payload, "Nao foi possivel executar o reprocessamento seletivo."),
+        });
+        return;
+      }
+
+      setRoutingNotice({
+        tone: payload.data.total_reprocessed > 0 ? "success" : "warning",
+        message:
+          payload.data.total_reprocessed > 0
+            ? `Reprocessamento concluido com ${payload.data.total_reprocessed} item(ns) resolvido(s).`
+            : `Nenhum item elegivel foi reprocessado. Restantes: ${payload.data.total_remaining}.`,
+      });
+    } catch {
       setRoutingNotice({
         tone: "error",
-        message: payload.error?.message ?? "Nao foi possivel executar o reprocessamento seletivo.",
+        message: "Falha de comunicacao ao executar o reprocessamento. Tente novamente.",
       });
+    } finally {
       setReprocessInProgress(false);
-      return;
     }
-
-    setRoutingNotice({
-      tone: payload.data.total_reprocessed > 0 ? "success" : "warning",
-      message:
-        payload.data.total_reprocessed > 0
-          ? `Reprocessamento concluido com ${payload.data.total_reprocessed} item(ns) resolvido(s).`
-          : `Nenhum item elegivel foi reprocessado. Restantes: ${payload.data.total_remaining}.`,
-    });
-    setReprocessInProgress(false);
   }
 
   async function handlePublishBatch() {
@@ -371,7 +403,7 @@ export default function RhBatchImportPage() {
       <BatchImportPageView
         selectedFile={selectedFile}
         feedback={feedback}
-        isSubmitDisabled={feedback.state === "submitting"}
+        isSubmitDisabled={feedback.state === "submitting" || !selectedFile}
         onFileChange={setSelectedFile}
         onSubmit={handleSubmit}
       />

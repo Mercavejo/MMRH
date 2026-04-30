@@ -21,6 +21,9 @@ type DbLike = {
             documentType: string;
             periodRef: string;
             status: string;
+            storageKey: string | null;
+            fileName: string | null;
+            mimeType: string | null;
           }>
         >;
       };
@@ -38,10 +41,16 @@ export type DownloadableDocumentMetadata = {
 };
 
 export class DownloadEligibilityError extends Error {
-  code: "DOCUMENT_NOT_FOUND" | "DOCUMENT_NOT_DOWNLOADABLE";
+  code:
+    | "DOCUMENT_NOT_FOUND"
+    | "DOCUMENT_NOT_DOWNLOADABLE"
+    | "DOCUMENT_ARTIFACT_UNAVAILABLE";
 
   constructor(
-    code: "DOCUMENT_NOT_FOUND" | "DOCUMENT_NOT_DOWNLOADABLE",
+    code:
+      | "DOCUMENT_NOT_FOUND"
+      | "DOCUMENT_NOT_DOWNLOADABLE"
+      | "DOCUMENT_ARTIFACT_UNAVAILABLE",
     message: string,
   ) {
     super(message);
@@ -70,6 +79,9 @@ export async function getDownloadableDocument(
       documentType: employeeDocuments.documentType,
       periodRef: employeeDocuments.periodRef,
       status: employeeDocuments.status,
+      storageKey: employeeDocuments.storageKey,
+      fileName: employeeDocuments.fileName,
+      mimeType: employeeDocuments.mimeType,
     })
     .from(employeeDocuments)
     .where(
@@ -96,12 +108,20 @@ export async function getDownloadableDocument(
     );
   }
 
+  if (!record.storageKey || !record.fileName || !record.mimeType) {
+    throw new DownloadEligibilityError(
+      "DOCUMENT_ARTIFACT_UNAVAILABLE",
+      "Documento publicado sem artefato real resolvivel para download.",
+    );
+  }
+
   return {
     document_id: record.id,
     document_type: record.documentType,
     period_ref: record.periodRef,
-    mime_type: resolveMimeType(),
-    file_name: resolveDownloadFileName(record.documentType, record.periodRef),
-    storage_key: `documents/${record.tenantId}/${record.userId}/${record.id}.pdf`,
+    mime_type: record.mimeType ?? resolveMimeType(),
+    file_name:
+      record.fileName ?? resolveDownloadFileName(record.documentType, record.periodRef),
+    storage_key: record.storageKey,
   };
 }

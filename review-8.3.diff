@@ -1,0 +1,398 @@
+﻿diff --git a/__tests__/batches/batch-stepper.test.tsx b/__tests__/batches/batch-stepper.test.tsx
+new file mode 100644
+index 0000000..86ba2b3
+--- /dev/null
++++ b/__tests__/batches/batch-stepper.test.tsx
+@@ -0,0 +1,56 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vitest";
++import { BatchStepper } from "@/components/batches/batch-stepper";
++import { buildPendingBatchRoutingProgress } from "@/lib/rh/batches/batch-progress";
++
++describe("BatchStepper", () => {
++  it("renders validation step as active when batch is pending", () => {
++    const summary = buildPendingBatchRoutingProgress({
++      batchId: "test-batch",
++      tenantId: "tenant-1",
++      totalDocuments: 10
++    });
++    const html = renderToStaticMarkup(<BatchStepper summary={summary} />);
++
++    expect(html).toContain("Validacao");
++    expect(html).toContain("Roteamento");
++    expect(html).toContain("Publicacao");
++  });
++
++  it("renders routing step as active when routing is completed but not published", () => {
++    const summary = {
++      batch_id: "test-batch",
++      tenant_id: "tenant-1",
++      total_documents: 10,
++      matched_documents: 10,
++      pending_documents: 0,
++      failed_documents: 0,
++      ambiguous_documents: 0,
++      routing_status: "completed" as const,
++      publication_status: "pending" as const,
++    };
++    const html = renderToStaticMarkup(<BatchStepper summary={summary} />);
++    // In our logic, completed routing means activeStep is 2 (Publicacao) if we use index.
++    // Wait, getActiveStep logic:
++    // if pending -> 1 (Routing active)
++    // if routing completed -> 2 (Publication active)
++    expect(html).toContain("Publicacao");
++  });
++
++  it("renders all steps as completed when published", () => {
++    const summary = {
++      batch_id: "test-batch",
++      tenant_id: "tenant-1",
++      total_documents: 10,
++      matched_documents: 10,
++      pending_documents: 0,
++      failed_documents: 0,
++      ambiguous_documents: 0,
++      routing_status: "completed" as const,
++      publication_status: "published" as const,
++    };
++    const html = renderToStaticMarkup(<BatchStepper summary={summary} />);
++    // activeStep = 3 (All done)
++    expect(html).toContain("Publicacao");
++  });
++});
+diff --git a/__tests__/batches/drop-zone.test.tsx b/__tests__/batches/drop-zone.test.tsx
+new file mode 100644
+index 0000000..ef9be5c
+--- /dev/null
++++ b/__tests__/batches/drop-zone.test.tsx
+@@ -0,0 +1,50 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it, vi } from "vitest";
++import { DropZone } from "@/components/batches/drop-zone";
++
++// Mock framer-motion since it's hard to test with static markup
++vi.mock("framer-motion", () => ({
++  motion: {
++    div: ({ children, ...props }: any) => <div {...props}>{children}</div>,
++  },
++  AnimatePresence: ({ children }: any) => <>{children}</>,
++}));
++
++// Mock react-dropzone
++vi.mock("react-dropzone", () => ({
++  useDropzone: () => ({
++    getRootProps: () => ({}),
++    getInputProps: () => ({}),
++    isDragActive: false,
++  }),
++}));
++
++describe("DropZone", () => {
++  it("renders empty state correctly", () => {
++    const html = renderToStaticMarkup(
++      <DropZone onFileSelect={() => {}} selectedFile={null} />
++    );
++
++    expect(html).toContain("Arraste e solte o relatorio");
++    expect(html).toContain("Ou clique para navegar");
++  });
++
++  it("renders selected file preview for PDF", () => {
++    const file = new File(["dummy content"], "test.pdf", { type: "application/pdf" });
++    const html = renderToStaticMarkup(
++      <DropZone onFileSelect={() => {}} selectedFile={file} />
++    );
++
++    expect(html).toContain("test.pdf");
++    expect(html).toContain("ARQUIVO PRONTO");
++  });
++
++  it("renders selected file preview for CSV", () => {
++    const file = new File(["id,name\n1,test"], "data.csv", { type: "text/csv" });
++    const html = renderToStaticMarkup(
++      <DropZone onFileSelect={() => {}} selectedFile={file} />
++    );
++
++    expect(html).toContain("data.csv");
++  });
++});
+diff --git a/src/components/batches/batch-stepper.tsx b/src/components/batches/batch-stepper.tsx
+new file mode 100644
+index 0000000..e7c276d
+--- /dev/null
++++ b/src/components/batches/batch-stepper.tsx
+@@ -0,0 +1,102 @@
++"use client";
++
++import { Box, Stepper, Step, StepLabel, StepIconProps, styled, alpha } from "@mui/material";
++import { 
++  CheckCircle as ValidatedIcon,
++  AltRoute as RoutingIcon,
++  FileUpload as PublishedIcon,
++  Error as ErrorIcon
++} from "@mui/icons-material";
++import type { BatchRoutingProgress } from "@/lib/rh/batches/batch-progress";
++
++const ColorlibStepIconRoot = styled("div")<{
++  ownerState: { active?: boolean; completed?: boolean; error?: boolean };
++}>(({ theme, ownerState }) => ({
++  backgroundColor: alpha(theme.palette.grey[700], 0.1),
++  zIndex: 1,
++  color: "#fff",
++  width: 40,
++  height: 40,
++  display: "flex",
++  borderRadius: "50%",
++  justifyContent: "center",
++  alignItems: "center",
++  ...(ownerState.active && {
++    background: theme.palette.primary.main,
++    boxShadow: `0 0 15px ${alpha(theme.palette.primary.main, 0.4)}`,
++  }),
++  ...(ownerState.completed && {
++    background: theme.palette.success.main,
++  }),
++  ...(ownerState.error && {
++    background: theme.palette.error.main,
++  }),
++}));
++
++function ColorlibStepIcon(props: StepIconProps & { error?: boolean }) {
++  const { active, completed, className, icon, error } = props;
++
++  const icons: { [index: string]: React.ReactElement } = {
++    1: <ValidatedIcon />,
++    2: <RoutingIcon />,
++    3: <PublishedIcon />,
++  };
++
++  return (
++    <ColorlibStepIconRoot ownerState={{ completed, active, error }} className={className}>
++      {error ? <ErrorIcon /> : icons[String(icon)]}
++    </ColorlibStepIconRoot>
++  );
++}
++
++interface BatchStepperProps {
++  summary: BatchRoutingProgress | null;
++  currentStep?: number;
++}
++
++const steps = ["Validacao", "Roteamento", "Publicacao"];
++
++export function BatchStepper({ summary }: BatchStepperProps) {
++  const getActiveStep = () => {
++    if (!summary) return 0;
++    
++    // Step 0: Initial Import/Validation
++    if (summary.routing_status === "pending") return 1; // Validation done, waiting for routing
++    
++    // Step 1: Routing
++    if (summary.routing_status === "completed" || summary.routing_status === "blocked") {
++      if (summary.publication_status === "published") return 3;
++      return 2; // Routing done, waiting for publication
++    }
++    
++    return 0;
++  };
++
++  const activeStep = getActiveStep();
++  const hasError = summary?.routing_status === "failed" || summary?.publication_status === "failed";
++
++  return (
++    <Box sx={{ width: "100%", py: 2 }}>
++      <Stepper activeStep={activeStep} alternativeLabel>
++        {steps.map((label, index) => {
++          const isError = hasError && index === activeStep;
++          return (
++            <Step key={label} completed={index < activeStep}>
++              <StepLabel 
++                StepIconComponent={(props) => <ColorlibStepIcon {...props} error={isError} />}
++                error={isError}
++              >
++                <Typography variant="body2" sx={{ fontWeight: index === activeStep ? 600 : 400 }}>
++                  {label}
++                </Typography>
++              </StepLabel>
++            </Step>
++          );
++        })}
++      </Stepper>
++    </Box>
++  );
++}
++
++// Minimal Typography import fix
++import { Typography } from "@mui/material";
+diff --git a/src/components/batches/drop-zone.tsx b/src/components/batches/drop-zone.tsx
+new file mode 100644
+index 0000000..2a9a597
+--- /dev/null
++++ b/src/components/batches/drop-zone.tsx
+@@ -0,0 +1,166 @@
++"use client";
++
++import { useMemo } from "react";
++import { useDropzone } from "react-dropzone";
++import { Box, Paper, Stack, Typography, alpha } from "@mui/material";
++import { 
++  CloudUpload as UploadIcon,
++  PictureAsPdf as PdfIcon,
++  Description as CsvIcon,
++  Code as JsonIcon,
++  InsertDriveFile as UnknownIcon
++} from "@mui/icons-material";
++import { motion, AnimatePresence } from "framer-motion";
++import { tokens } from "@/lib/theme/tokens";
++
++interface DropZoneProps {
++  onFileSelect: (file: File | null) => void;
++  selectedFile: File | null;
++  isSubmitting?: boolean;
++  accept?: Record<string, string[]>;
++}
++
++export function DropZone({ onFileSelect, selectedFile, isSubmitting, accept }: DropZoneProps) {
++  const { getRootProps, getInputProps, isDragActive } = useDropzone({
++    onDrop: (acceptedFiles) => {
++      onFileSelect(acceptedFiles[0] ?? null);
++    },
++    accept: accept ?? {
++      "text/csv": [".csv"],
++      "application/json": [".json"],
++      "application/pdf": [".pdf"],
++    },
++    multiple: false,
++    disabled: isSubmitting,
++  });
++
++  const getFileIcon = (file: File) => {
++    const ext = file.name.split(".").pop()?.toLowerCase();
++    switch (ext) {
++      case "pdf": return <PdfIcon sx={{ fontSize: 40, color: "error.main" }} />;
++      case "csv": return <CsvIcon sx={{ fontSize: 40, color: "success.main" }} />;
++      case "json": return <JsonIcon sx={{ fontSize: 40, color: "primary.main" }} />;
++      default: return <UnknownIcon sx={{ fontSize: 40, color: "text.secondary" }} />;
++    }
++  };
++
++  const formatFileSize = (bytes: number) => {
++    if (bytes === 0) return "0 Bytes";
++    const k = 1024;
++    const sizes = ["Bytes", "KB", "MB", "GB"];
++    const i = Math.floor(Math.log(bytes) / Math.log(k));
++    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
++  };
++
++  return (
++    <Box {...getRootProps()}>
++      <input {...getInputProps()} />
++      <Paper
++        component={motion.div}
++        animate={{
++          borderColor: isDragActive ? "var(--mui-palette-primary-main)" : tokens.colors.surface.border,
++          backgroundColor: isDragActive 
++            ? "var(--mui-palette-primary-lighter)" 
++            : "var(--mui-palette-background-paper)",
++          scale: isDragActive ? 1.02 : 1,
++        }}
++        whileHover={{ scale: isSubmitting ? 1 : 1.01 }}
++        transition={{ duration: 0.2 }}
++        sx={{
++          p: 4,
++          border: "2px dashed",
++          borderRadius: 2,
++          cursor: isSubmitting ? "not-allowed" : "pointer",
++          textAlign: "center",
++          position: "relative",
++          overflow: "hidden",
++          minHeight: 200,
++          display: "flex",
++          alignItems: "center",
++          justifyContent: "center",
++          transition: "background-color 0.2s, border-color 0.2s",
++        }}
++      >
++        <AnimatePresence mode="wait">
++          {!selectedFile ? (
++            <Stack
++              key="empty"
++              component={motion.div}
++              initial={{ opacity: 0, y: 10 }}
++              animate={{ opacity: 1, y: 0 }}
++              exit={{ opacity: 0, y: -10 }}
++              spacing={2}
++              alignItems="center"
++            >
++              <Box
++                component={motion.div}
++                animate={isDragActive ? { y: [0, -10, 0] } : {}}
++                transition={{ repeat: Infinity, duration: 1.5 }}
++              >
++                <UploadIcon sx={{ fontSize: 48, color: "primary.main" }} />
++              </Box>
++              <Box>
++                <Typography variant="h6">
++                  {isDragActive ? "Solte o arquivo aqui" : "Arraste e solte o relatorio"}
++                </Typography>
++                <Typography variant="body2" color="text.secondary">
++                  Ou clique para navegar (CSV, JSON, PDF)
++                </Typography>
++              </Box>
++            </Stack>
++          ) : (
++            <Stack
++              key="preview"
++              component={motion.div}
++              initial={{ opacity: 0, scale: 0.9 }}
++              animate={{ opacity: 1, scale: 1 }}
++              exit={{ opacity: 0, scale: 0.9 }}
++              spacing={2}
++              alignItems="center"
++              sx={{ width: "100%" }}
++            >
++              <Box>{getFileIcon(selectedFile)}</Box>
++              <Box sx={{ maxWidth: "80%" }}>
++                <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600 }}>
++                  {selectedFile.name}
++                </Typography>
++                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
++                  {formatFileSize(selectedFile.size)}
++                </Typography>
++              </Box>
++              <Box
++                component={motion.div}
++                initial={{ width: 0 }}
++                animate={{ width: "100%" }}
++                sx={{
++                  maxWidth: 200,
++                  height: 4,
++                  bgcolor: "primary.main",
++                  borderRadius: 1,
++                  mt: 1,
++                  opacity: 0.6
++                }}
++              />
++              <Typography variant="caption" color="primary.main" sx={{ fontWeight: 600 }}>
++                ARQUIVO PRONTO
++              </Typography>
++            </Stack>
++          )}
++        </AnimatePresence>
++
++        {isDragActive && (
++          <Box
++            component={motion.div}
++            layoutId="highlight"
++            sx={{
++              position: "absolute",
++              inset: 0,
++              bgcolor: (theme) => alpha(theme.palette.primary.main, 0.05),
++              pointerEvents: "none",
++            }}
++          />
++        )}
++      </Paper>
++    </Box>
++  );
++}

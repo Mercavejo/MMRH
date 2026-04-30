@@ -7,7 +7,11 @@ import {
 } from "@/lib/observability/correlation-id";
 
 function isProtectedPath(pathname: string): boolean {
-  if (pathname.startsWith("/api/v1/auth") || pathname === "/api/v1/health") {
+  if (
+    pathname.startsWith("/api/v1/auth") ||
+    pathname === "/api/v1/health" ||
+    pathname === "/api/v1/employee/activation"
+  ) {
     return false;
   }
 

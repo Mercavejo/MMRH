@@ -19,16 +19,18 @@ export function generateSessionToken(): string {
   return randomBytes(48).toString("hex");
 }
 
+type SessionWriter = Pick<typeof db, "insert">;
+
 export async function createSession(params: {
   userId: string;
   tenantId: string;
   ipAddress?: string;
   userAgent?: string;
-}): Promise<{ token: string; expiresAt: Date }> {
+}, dbClient: SessionWriter = db): Promise<{ token: string; expiresAt: Date }> {
   const token = generateSessionToken();
   const expiresAt = getSessionExpiration();
 
-  await db.insert(sessions).values({
+  await dbClient.insert(sessions).values({
     userId: params.userId,
     tenantId: params.tenantId,
     tokenHash: hashSessionToken(token),

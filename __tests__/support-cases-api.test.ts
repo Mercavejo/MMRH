@@ -9,17 +9,23 @@ const {
   dbFromMock,
   dbWhereMock,
   dbLimitMock,
+  dbInsertMock,
+  dbInsertValuesMock,
   getSupportCaseMock,
   resolveSupportCaseMock,
   SupportCaseError,
+  writePlaytestEventMock,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
   dbSelectMock: vi.fn(),
   dbFromMock: vi.fn(),
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
+  dbInsertMock: vi.fn(),
+  dbInsertValuesMock: vi.fn(),
   getSupportCaseMock: vi.fn(),
   resolveSupportCaseMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
   SupportCaseError: class extends Error {
     constructor(
       public readonly code: string,
@@ -44,8 +50,8 @@ vi.mock("@/lib/db/client", () => ({
         }),
       }),
     }),
-    insert: vi.fn().mockReturnValue({
-      values: vi.fn().mockResolvedValue(undefined),
+    insert: dbInsertMock.mockReturnValue({
+      values: dbInsertValuesMock,
     }),
   },
 }));
@@ -58,6 +64,10 @@ vi.mock("@/modules/support/application/get-support-case", () => ({
 vi.mock("@/modules/support/application/resolve-support-case", () => ({
   resolveSupportCase: resolveSupportCaseMock,
   SupportCaseError,
+}));
+
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
 }));
 
 import { GET as getSupportCaseRoute } from "@/app/api/v1/support/cases/[caseId]/route";
@@ -95,9 +105,13 @@ describe("support cases api", () => {
       status: "resolved",
       resolved_at: "2026-04-13T12:00:00.000Z",
     });
+    writePlaytestEventMock.mockResolvedValue(undefined);
+    dbInsertValuesMock.mockResolvedValue(undefined);
   });
 
   it("returns support case with correlation id", async () => {
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
+
     const request = new NextRequest(
       "http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222?from=2026-04-13T00:00:00.000Z&to=2026-04-13T23:59:59.000Z",
       {
@@ -117,6 +131,36 @@ describe("support cases api", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-correlation-id")).toBe("33333333-3333-4333-8333-333333333333");
     expect(body.data.case_id).toBe("22222222-2222-4222-8222-222222222222");
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.support.case.view",
+        status: "success",
+        resourceType: "support_case",
+        details: expect.objectContaining({ actor_role: "rh_gestor" }),
+      }),
+    );
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
+  it("records admin support consolidation for internal playtesting", async () => {
+    dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
+
+    const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222", {
+      method: "GET",
+      headers: { cookie: "session_id=token" },
+    });
+
+    const response = await getSupportCaseRoute(request, {
+      params: Promise.resolve({ caseId: "22222222-2222-4222-8222-222222222222" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.support.case.view",
+        details: expect.objectContaining({ actor_role: "admin_plataforma" }),
+      }),
+    );
   });
 
   it("returns 400 for invalid support case id", async () => {
@@ -161,6 +205,7 @@ describe("support cases api", () => {
   });
 
   it("maps 404 from support case domain", async () => {
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
     getSupportCaseMock.mockRejectedValue(new SupportCaseError("NOT_FOUND", "Caso nao encontrado.", 404));
 
     const request = new NextRequest("http://localhost/api/v1/support/cases/22222222-2222-4222-8222-222222222222", {
@@ -175,6 +220,13 @@ describe("support cases api", () => {
 
     expect(response.status).toBe(404);
     expect(body.error.code).toBe("NOT_FOUND");
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.support.case.friction",
+        status: "failure",
+        details: expect.objectContaining({ cause: "domain_error", code: "NOT_FOUND" }),
+      }),
+    );
   });
 
   it("resolves support case", async () => {

@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SISTEMA ADALTO - Design Directions</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --surface: #ffffff;
+      --surface-alt: #eef3f8;
+      --text: #102033;
+      --muted: #5f6f82;
+      --line: #d6dee8;
+      --primary: #0f5f7a;
+      --primary-strong: #08384a;
+      --success: #2e7d5b;
+      --warning: #b27b14;
+      --error: #b3261e;
+      --shadow: 0 18px 40px rgba(16, 32, 51, 0.10);
+      --radius: 20px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(15, 95, 122, 0.08), transparent 26%),
+        radial-gradient(circle at bottom right, rgba(46, 125, 91, 0.08), transparent 20%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    header {
+      padding: 40px 24px 16px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .lede {
+      margin: 0;
+      max-width: 76ch;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.6;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.75);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 0.92rem;
+      color: var(--muted);
+      backdrop-filter: blur(10px);
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 16px 24px 48px;
+      display: grid;
+      gap: 22px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    .direction {
+      grid-column: span 12;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .direction header {
+      padding: 22px 22px 14px;
+      margin: 0;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(238,243,248,0.6));
+    }
+
+    .direction h2 {
+      margin: 0 0 8px;
+      font-size: 1.35rem;
+      letter-spacing: -0.02em;
+    }
+
+    .direction p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .mockup {
+      padding: 22px;
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 18px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.70), rgba(255,255,255,1));
+    }
+
+    .screen {
+      min-height: 340px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-alt);
+    }
+
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .badge {
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .badge.green { background: rgba(46,125,91,0.12); color: var(--success); }
+    .badge.blue { background: rgba(15,95,122,0.12); color: var(--primary); }
+    .badge.amber { background: rgba(178,123,20,0.14); color: var(--warning); }
+
+    .content {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .heroCard {
+      background: linear-gradient(135deg, rgba(15,95,122,0.08), rgba(46,125,91,0.06));
+      border: 1px solid rgba(15,95,122,0.14);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .heroCard h3 {
+      margin: 0 0 8px;
+      font-size: 1.25rem;
+    }
+
+    .heroCard p, .item p, .detail p { margin: 0; color: var(--muted); line-height: 1.5; }
+
+    .ctaRow {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--text);
+    }
+
+    .btn.primary {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: white;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .meta {
+      display: grid;
+      gap: 6px;
+    }
+
+    .meta strong {
+      font-size: 0.98rem;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .detail {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface-alt);
+      padding: 14px;
+    }
+
+    .miniGrid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .miniStat {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: white;
+    }
+
+    .miniStat strong {
+      display: block;
+      font-size: 1.15rem;
+      margin-bottom: 6px;
+    }
+
+    .sidebar {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(238,243,248,0.7), rgba(255,255,255,0.95));
+      display: grid;
+      gap: 14px;
+    }
+
+    .sidebar h3 {
+      margin: 0;
+      font-size: 1rem;
+    }
+
+    .sidebar ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .direction:nth-child(1) .heroCard { background: linear-gradient(135deg, rgba(15,95,122,0.10), rgba(8,56,74,0.06)); }
+    .direction:nth-child(2) .heroCard { background: linear-gradient(135deg, rgba(46,125,91,0.10), rgba(178,123,20,0.06)); }
+    .direction:nth-child(3) .heroCard { background: linear-gradient(135deg, rgba(83,103,214,0.08), rgba(15,95,122,0.05)); }
+
+    .footerNote {
+      padding: 0 24px 32px;
+      max-width: 1440px;
+      margin: 0 auto;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    @media (max-width: 980px) {
+      .mockup { grid-template-columns: 1fr; }
+      .miniGrid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SISTEMA ADALTO - Design Directions</h1>
+    <p class="lede">Três direções visuais para comparar hierarquia, densidade e tom da interface. Cada uma parte da mesma fundação, mas muda o peso entre simplicidade do colaborador e controle operacional do RH.</p>
+    <div class="legend">
+      <span class="pill">Base corporativa</span>
+      <span class="pill">Confiança e rastreabilidade</span>
+      <span class="pill">Baixa fricção no portal</span>
+      <span class="pill">Operação orientada a exceções</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="direction">
+      <header>
+        <h2>Direção 1 - Portal Claro</h2>
+        <p>Prioriza navegação direta, hierarquia limpa e foco no documento certo. É a direção mais próxima de um portal de consumo com acabamento corporativo.</p>
+      </header>
+      <div class="mockup">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">ADALTO</div>
+            <span class="badge blue">Colaborador</span>
+          </div>
+          <div class="content">
+            <div class="heroCard">
+              <h3>Seus documentos prontos</h3>
+              <p>Holerite de março e cartão de ponto disponíveis. A ação principal aparece imediatamente.</p>
+              <div class="ctaRow">
+                <span class="btn primary">Abrir holerite</span>
+                <span class="btn">Ver histórico</span>
+              </div>
+            </div>
+            <div class="list">
+              <div class="item">
+                <div class="meta"><strong>Holerite - Março/2026</strong><p>Publicado hoje</p></div>
+                <span class="badge green">Disponível</span>
+              </div>
+              <div class="item">
+                <div class="meta"><strong>Cartão de ponto - Março/2026</strong><p>Processado e validado</p></div>
+                <span class="badge blue">Novo</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside class="sidebar">
+          <h3>Características</h3>
+          <ul>
+            <li>Mais leve e direta.</li>
+            <li>Ideal para o portal do colaborador.</li>
+            <li>Baixa densidade visual.</li>
+            <li>Boa leitura em desktop corporativo.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section class="direction">
+      <header>
+        <h2>Direção 2 - Operação Guiada</h2>
+        <p>Equilibra clareza para o colaborador com mais ênfase em estados, exceções e progresso. É a direção mais equilibrada para um produto que precisa mostrar o backstage sem ficar pesado.</p>
+      </header>
+      <div class="mockup">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">ADALTO</div>
+            <span class="badge amber">RH / DP</span>
+          </div>
+          <div class="content">
+            <div class="miniGrid">
+              <div class="miniStat"><strong>98%</strong><p>Roteamento correto</p></div>
+              <div class="miniStat"><strong>12</strong><p>Exceções pendentes</p></div>
+              <div class="miniStat"><strong>45 min</strong><p>Processamento atual</p></div>
+            </div>
+            <div class="stack">
+              <div class="detail">
+                <p><strong>Lote março_2026</strong> em processamento. 3 itens exigem revisão de vínculo, 9 seguem para publicação.</p>
+              </div>
+              <div class="item">
+                <div class="meta"><strong>Exceção - colaborador não encontrado</strong><p>Solicita revisão manual</p></div>
+                <span class="badge amber">Ação necessária</span>
+              </div>
+              <div class="item">
+                <div class="meta"><strong>Holerites validados</strong><p>Prontos para publicação</p></div>
+                <span class="badge green">OK</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside class="sidebar">
+          <h3>Características</h3>
+          <ul>
+            <li>Mostra status e progresso com mais peso.</li>
+            <li>Fortalece o painel administrativo.</li>
+            <li>Bom para operação em lote.</li>
+            <li>Continua limpo, mas com mais densidade.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section class="direction">
+      <header>
+        <h2>Direção 3 - Confiança Estruturada</h2>
+        <p>Mais editorial e institucional, com forte separação entre contexto, status e ação. É a direção mais premium e mais adequada quando a percepção de segurança precisa dominar a interface.</p>
+      </header>
+      <div class="mockup">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">ADALTO</div>
+            <span class="badge green">Segurança ativa</span>
+          </div>
+          <div class="content">
+            <div class="heroCard">
+              <h3>Publicação auditada</h3>
+              <p>Eventos registrados, trilha de auditoria disponível e documentos organizados por período.</p>
+            </div>
+            <div class="miniGrid">
+              <div class="miniStat"><strong>Auditado</strong><p>Upload e publicação</p></div>
+              <div class="miniStat"><strong>Seguro</strong><p>Acesso por colaborador</p></div>
+              <div class="miniStat"><strong>Claro</strong><p>Status sem ambiguidade</p></div>
+            </div>
+          </div>
+        </div>
+        <aside class="sidebar">
+          <h3>Características</h3>
+          <ul>
+            <li>Mais institucional e confiável.</li>
+            <li>Reforça a natureza sensível do produto.</li>
+            <li>Boa opção para comunicação com RH e gestão.</li>
+            <li>Requer disciplina para não parecer formal demais.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="footerNote">
+    Use esta vitrine como guia para comparar direção visual, densidade e clareza operacional. A direção recomendada para o MVP é uma combinação de Direção 1 com elementos da Direção 2, preservando a confiança da Direção 3 sem exagerar na formalidade.
+  </div>
+</body>
+</html>

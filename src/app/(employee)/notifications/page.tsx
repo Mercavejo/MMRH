@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Alert,
   Button,
@@ -15,6 +14,7 @@ import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
 import { listEmployeeNotifications } from "@/lib/notifications/employee-notification-tracking";
 import { NotificationReadButton } from "./notification-read-button";
+import { MOCK_NOTIFICATIONS } from "@/lib/demo/mock-data";
 
 type NotificationItem = Awaited<ReturnType<typeof listEmployeeNotifications>>[number];
 
@@ -37,7 +37,7 @@ export function EmployeeNotificationsPageView({
             Acompanhe atualizacoes de documento e contestacao com orientacao objetiva.
           </Typography>
 
-          <Button component={Link} href="/documents" variant="outlined">
+          <Button href="/documents" variant="outlined">
             Voltar para Meus Documentos
           </Button>
 
@@ -124,11 +124,12 @@ export default async function EmployeeNotificationsPage() {
   }
 
   const role = await resolveRole(session.userId, session.tenantId);
+
+  // Gestor RH em modo simulação — entregar notificações mock para demonstração
   if (role !== "colaborador") {
     return (
       <EmployeeNotificationsPageView
-        items={[]}
-        errorMessage="Acesso permitido somente para colaborador."
+        items={MOCK_NOTIFICATIONS}
       />
     );
   }

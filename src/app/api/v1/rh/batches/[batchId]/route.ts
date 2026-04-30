@@ -16,6 +16,7 @@ import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
 } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
 
 const paramsSchema = z.object({
   batchId: z.string().uuid(),
@@ -32,6 +33,14 @@ function jsonResponse<T>(
   init?: ResponseInit,
 ) {
   return withCorrelationHeader(NextResponse.json(body, init), correlationId);
+}
+
+async function recordPlaytestEvent(params: Parameters<typeof writePlaytestEvent>[0]) {
+  try {
+    await writePlaytestEvent(params);
+  } catch (error) {
+    console.error("[playtest.batches.history] Falha ao registrar evento", error);
+  }
 }
 
 async function resolveTenantRole(userId: string, tenantId: string): Promise<RbacRole | undefined> {
@@ -52,6 +61,14 @@ export async function GET(
   const paramsParsed = paramsSchema.safeParse(await context.params);
 
   if (!paramsParsed.success) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "validation_error", issues: paramsParsed.error.issues },
+    });
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "Identificador de lote invalido.", correlationId, {
         issues: paramsParsed.error.issues,
@@ -63,6 +80,14 @@ export async function GET(
 
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionToken) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao ausente" },
+    });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId),
       correlationId,
@@ -72,6 +97,14 @@ export async function GET(
 
   const session = await validateSession(sessionToken);
   if (!session) {
+    await writePlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao invalida ou expirada" },
+    });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
       correlationId,
@@ -81,6 +114,15 @@ export async function GET(
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "forbidden", reason: "Usuario sem permissao no tenant" },
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
       correlationId,
@@ -96,6 +138,15 @@ export async function GET(
       action: RBAC_ACTIONS.tenantRead,
     });
   } catch (error) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "forbidden", reason: (error as Error).message },
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
         cause: (error as Error).message,
@@ -106,6 +157,15 @@ export async function GET(
   }
 
   if (role !== "rh_operator" && role !== "rh_gestor") {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.batches.history.friction",
+      resourceType: "batches",
+      status: "failure",
+      details: { cause: "forbidden", reason: "Perfil sem permissao para historico do lote" },
+    });
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",
@@ -144,6 +204,18 @@ export async function GET(
 
   const batch = rows[0];
   if (!batch) {
+    if (role === "rh_gestor") {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.batches.history.friction",
+        resourceType: "batches",
+        resourceId: paramsParsed.data.batchId,
+        status: "failure",
+        details: { cause: "not_found", batch_id: paramsParsed.data.batchId },
+      });
+    }
     return jsonResponse(
       errorResponse("NOT_FOUND", "Lote nao encontrado.", correlationId),
       correlationId,
@@ -152,11 +224,41 @@ export async function GET(
   }
 
   if (batch.tenantId !== session.tenantId) {
+    if (role === "rh_gestor") {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.batches.history.friction",
+        resourceType: "batches",
+        resourceId: paramsParsed.data.batchId,
+        status: "failure",
+        details: { cause: "forbidden", reason: "Acesso a lote de outro tenant" },
+      });
+    }
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado para lote de outro tenant.", correlationId),
       correlationId,
       { status: 403 },
     );
+  }
+
+  if (role === "rh_gestor") {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.batches.history.view",
+      resourceType: "batches",
+      resourceId: batch.id,
+      status: "success",
+      details: {
+        batch_id: batch.id,
+        routing_status: batch.routingStatus,
+        publication_status: batch.publicationStatus,
+        pending_documents: batch.routingPendingCount,
+      },
+    });
   }
 
   return jsonResponse(

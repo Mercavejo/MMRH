@@ -35,19 +35,7 @@ vi.mock("@/lib/auth/audit", () => ({
 
 vi.mock("@/lib/db/client", () => ({
   db: {
-    select: selectMock.mockReturnValue({
-      from: fromMock.mockReturnValue({
-          where: whereMock.mockReturnValue({
-            limit: limitMock.mockImplementation(async () => {
-              if (selectResultQueue.length > 0) {
-                return selectResultQueue.shift();
-              }
-
-              return [];
-            }),
-          }),
-      }),
-    }),
+    select: selectMock,
   },
 }));
 
@@ -58,6 +46,19 @@ describe("auth login route", () => {
     vi.clearAllMocks();
     selectResultQueue.length = 0;
 
+    selectMock.mockReturnValue({
+      from: fromMock.mockReturnValue({
+        where: whereMock.mockReturnValue({
+          limit: limitMock.mockImplementation(async () => {
+            if (selectResultQueue.length > 0) {
+              return selectResultQueue.shift();
+            }
+
+            return [];
+          }),
+        }),
+      }),
+    });
     verifyPasswordMock.mockResolvedValue(true);
     createSessionMock.mockResolvedValue({
       token: "session-token",
@@ -179,5 +180,27 @@ describe("auth login route", () => {
         tenantId: "22222222-2222-4222-8222-222222222222",
       }),
     );
+  });
+
+  it("returns a generic server error without leaking internal messages", async () => {
+    selectMock.mockImplementationOnce(() => {
+      throw new Error("database password leaked");
+    });
+
+    const request = new NextRequest("http://localhost/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "user@example.com",
+        password: "password123",
+      }),
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error.message).toBe("Erro interno ao autenticar.");
+    expect(body.error.message).not.toContain("database password leaked");
   });
 });

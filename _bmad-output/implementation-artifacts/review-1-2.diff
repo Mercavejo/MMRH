@@ -1,0 +1,620 @@
+diff --git a/package.json b/package.json
+index 3c88495..385d757 100644
+--- a/package.json
++++ b/package.json
+@@ -6,21 +6,37 @@
+     "dev": "next dev",
+     "build": "next build",
+     "start": "next start",
+-    "lint": "eslint"
++    "lint": "eslint",
++    "test": "vitest",
++    "test:run": "vitest run",
++    "db:generate": "drizzle-kit generate",
++    "db:migrate": "drizzle-kit migrate"
+   },
+   "dependencies": {
++    "@emotion/react": "^11.14.0",
++    "@emotion/styled": "^11.14.1",
++    "@mui/icons-material": "^9.0.0",
++    "@mui/material": "^9.0.0",
++    "@upstash/redis": "^1.37.0",
++    "bcryptjs": "^3.0.3",
++    "drizzle-orm": "^0.45.2",
+     "next": "16.2.3",
++    "postgres": "^3.4.9",
+     "react": "19.2.4",
+-    "react-dom": "19.2.4"
++    "react-dom": "19.2.4",
++    "zod": "^4.3.6"
+   },
+   "devDependencies": {
+     "@tailwindcss/postcss": "^4",
+     "@types/node": "^20",
+     "@types/react": "^19",
+     "@types/react-dom": "^19",
++    "@vitest/coverage-v8": "^4.1.3",
++    "drizzle-kit": "^0.31.10",
+     "eslint": "^9",
+     "eslint-config-next": "16.2.3",
+     "tailwindcss": "^4",
+-    "typescript": "^5"
++    "typescript": "^5",
++    "vitest": "^4.1.3"
+   }
+ }
+diff --git a/src/proxy.ts b/src/proxy.ts
+new file mode 100644
+index 0000000..3e8f7ab
+--- /dev/null
++++ b/src/proxy.ts
+@@ -0,0 +1,56 @@
++import { NextRequest, NextResponse } from "next/server";
++import { errorResponse } from "@/lib/api/response";
++import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++
++function isProtectedPath(pathname: string): boolean {
++  if (pathname.startsWith("/api/v1/auth") || pathname === "/api/v1/health") {
++    return false;
++  }
++
++  if (pathname.startsWith("/api/v1")) {
++    return true;
++  }
++
++  return pathname.startsWith("/employee") || pathname.startsWith("/rh");
++}
++
++export function proxy(request: NextRequest) {
++  const pathname = request.nextUrl.pathname;
++  const correlationId = resolveCorrelationId(
++    request.headers.get(CORRELATION_ID_HEADER),
++  );
++
++  const hasSessionCookie = !!request.cookies.get(SESSION_COOKIE_NAME)?.value;
++
++  if (isProtectedPath(pathname) && !hasSessionCookie) {
++    if (pathname.startsWith("/api/v1")) {
++      return NextResponse.json(
++        errorResponse("UNAUTHORIZED", "Sessao obrigatoria.", correlationId),
++        { status: 401 },
++      );
++    }
++
++    const redirectUrl = new URL("/", request.url);
++    return NextResponse.redirect(redirectUrl);
++  }
++
++  const requestHeaders = new Headers(request.headers);
++  requestHeaders.set(CORRELATION_ID_HEADER, correlationId);
++
++  const response = NextResponse.next({
++    request: {
++      headers: requestHeaders,
++    },
++  });
++
++  response.headers.set(CORRELATION_ID_HEADER, correlationId);
++  return response;
++}
++
++export const config = {
++  matcher: "/:path*",
++};
+diff --git a/src/lib/auth/password.ts b/src/lib/auth/password.ts
+new file mode 100644
+index 0000000..a04c8cd
+--- /dev/null
++++ b/src/lib/auth/password.ts
+@@ -0,0 +1,14 @@
++import bcrypt from "bcryptjs";
++
++const SALT_ROUNDS = 12;
++
++export async function hashPassword(plainPassword: string): Promise<string> {
++  return bcrypt.hash(plainPassword, SALT_ROUNDS);
++}
++
++export async function verifyPassword(
++  plainPassword: string,
++  passwordHash: string,
++): Promise<boolean> {
++  return bcrypt.compare(plainPassword, passwordHash);
++}
+diff --git a/src/lib/auth/cookies.ts b/src/lib/auth/cookies.ts
+new file mode 100644
+index 0000000..20be34a
+--- /dev/null
++++ b/src/lib/auth/cookies.ts
+@@ -0,0 +1,17 @@
++export const SESSION_COOKIE_NAME = "session_id";
++
++const SESSION_INACTIVITY_MINUTES = 30;
++
++export function getSessionExpiration(baseDate = new Date()): Date {
++  return new Date(baseDate.getTime() + SESSION_INACTIVITY_MINUTES * 60 * 1000);
++}
++
++export function getSessionCookieOptions(expiresAt: Date) {
++  return {
++    httpOnly: true,
++    secure: process.env.NODE_ENV === "production",
++    sameSite: "lax" as const,
++    path: "/",
++    expires: expiresAt,
++  };
++}
+diff --git a/src/lib/auth/session.ts b/src/lib/auth/session.ts
+new file mode 100644
+index 0000000..50e9afb
+--- /dev/null
++++ b/src/lib/auth/session.ts
+@@ -0,0 +1,101 @@
++import { createHash, randomBytes } from "node:crypto";
++import { and, eq } from "drizzle-orm";
++import { db } from "@/lib/db/client";
++import { sessions } from "@/lib/db/schema";
++import { getSessionExpiration } from "@/lib/auth/cookies";
++
++export type ActiveSession = {
++  id: string;
++  userId: string;
++  tenantId: string;
++  expiresAt: Date;
++};
++
++function hashSessionToken(token: string): string {
++  return createHash("sha256").update(token).digest("hex");
++}
++
++export function generateSessionToken(): string {
++  return randomBytes(48).toString("hex");
++}
++
++export async function createSession(params: {
++  userId: string;
++  tenantId: string;
++  ipAddress?: string;
++  userAgent?: string;
++}): Promise<{ token: string; expiresAt: Date }> {
++  const token = generateSessionToken();
++  const expiresAt = getSessionExpiration();
++
++  await db.insert(sessions).values({
++    userId: params.userId,
++    tenantId: params.tenantId,
++    tokenHash: hashSessionToken(token),
++    expiresAt,
++    ipAddress: params.ipAddress,
++    userAgent: params.userAgent,
++    isValid: true,
++  });
++
++  return { token, expiresAt };
++}
++
++export async function validateSession(
++  token: string,
++): Promise<ActiveSession | null> {
++  const tokenHash = hashSessionToken(token);
++  const rows = await db
++    .select({
++      id: sessions.id,
++      userId: sessions.userId,
++      tenantId: sessions.tenantId,
++      expiresAt: sessions.expiresAt,
++    })
++    .from(sessions)
++    .where(and(eq(sessions.tokenHash, tokenHash), eq(sessions.isValid, true)))
++    .limit(1);
++
++  const found = rows[0];
++  if (!found) return null;
++
++  if (found.expiresAt.getTime() <= Date.now()) {
++    await invalidateSession(token);
++    return null;
++  }
++
++  return found;
++}
++
++export async function invalidateSession(token: string): Promise<void> {
++  const tokenHash = hashSessionToken(token);
++
++  await db
++    .update(sessions)
++    .set({ isValid: false, rotatedAt: new Date() })
++    .where(and(eq(sessions.tokenHash, tokenHash), eq(sessions.isValid, true)));
++}
++
++export async function rotateSession(params: {
++  token: string;
++  ipAddress?: string;
++  userAgent?: string;
++}): Promise<{ token: string; expiresAt: Date; session: ActiveSession } | null> {
++  const currentSession = await validateSession(params.token);
++  if (!currentSession) return null;
++
++  await invalidateSession(params.token);
++
++  const next = await createSession({
++    userId: currentSession.userId,
++    tenantId: currentSession.tenantId,
++    ipAddress: params.ipAddress,
++    userAgent: params.userAgent,
++  });
++
++  return {
++    token: next.token,
++    expiresAt: next.expiresAt,
++    session: currentSession,
++  };
++}
+diff --git a/src/lib/auth/audit.ts b/src/lib/auth/audit.ts
+new file mode 100644
+index 0000000..4098793
+--- /dev/null
++++ b/src/lib/auth/audit.ts
+@@ -0,0 +1,31 @@
++import { randomUUID } from "node:crypto";
++import { db } from "@/lib/db/client";
++import { auditLogs } from "@/lib/db/schema";
++
++function toUuid(value?: string | null): string {
++  const uuidPattern =
++    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++  return value && uuidPattern.test(value) ? value : randomUUID();
++}
++
++export async function writeAuthAudit(params: {
++  tenantId: string;
++  actorId?: string;
++  action: "auth.login" | "auth.logout" | "auth.refresh";
++  status: "success" | "failure";
++  correlationId?: string;
++  ipAddress?: string;
++  details?: Record<string, unknown>;
++}): Promise<void> {
++  await db.insert(auditLogs).values({
++    tenantId: params.tenantId,
++    actorId: params.actorId,
++    correlationId: toUuid(params.correlationId),
++    action: params.action,
++    resourceType: "session",
++    resourceId: params.actorId ?? "anonymous",
++    status: params.status,
++    details: params.details,
++    ipAddress: params.ipAddress,
++  });
++}
+diff --git a/src/app/api/v1/auth/login/route.ts b/src/app/api/v1/auth/login/route.ts
+new file mode 100644
+index 0000000..1685344
+--- /dev/null
++++ b/src/app/api/v1/auth/login/route.ts
+@@ -0,0 +1,135 @@
++import { and, eq } from "drizzle-orm";
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import {
++  getSessionCookieOptions,
++  SESSION_COOKIE_NAME,
++} from "@/lib/auth/cookies";
++import { verifyPassword } from "@/lib/auth/password";
++import { createSession } from "@/lib/auth/session";
++import { writeAuthAudit } from "@/lib/auth/audit";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { db } from "@/lib/db/client";
++import { userTenantMappings, users } from "@/lib/db/schema";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++
++const loginSchema = z.object({
++  email: z.string().email(),
++  password: z.string().min(8),
++});
++
++export async function POST(request: NextRequest) {
++  const correlationId = resolveCorrelationId(
++    request.headers.get(CORRELATION_ID_HEADER),
++  );
++
++  const body = await request.json().catch(() => null);
++  const parsed = loginSchema.safeParse(body);
++
++  if (!parsed.success) {
++    return NextResponse.json(
++      errorResponse(
++        "VALIDATION_ERROR",
++        "Payload de autenticacao invalido.",
++        correlationId,
++        { issues: parsed.error.issues },
++      ),
++      { status: 400 },
++    );
++  }
++
++  const userRows = await db
++    .select({
++      id: users.id,
++      email: users.email,
++      passwordHash: users.passwordHash,
++      isActive: users.isActive,
++    })
++    .from(users)
++    .where(and(eq(users.email, parsed.data.email), eq(users.isActive, true)))
++    .limit(1);
++
++  const user = userRows[0];
++
++  if (!user) {
++    return NextResponse.json(
++      errorResponse("UNAUTHORIZED", "Credenciais invalidas.", correlationId),
++      { status: 401 },
++    );
++  }
++
++  const isValidPassword = await verifyPassword(parsed.data.password, user.passwordHash);
++
++  if (!isValidPassword) {
++    return NextResponse.json(
++      errorResponse("UNAUTHORIZED", "Credenciais invalidas.", correlationId),
++      { status: 401 },
++    );
++  }
++
++  const mappingRows = await db
++    .select({
++      tenantId: userTenantMappings.tenantId,
++      role: userTenantMappings.role,
++    })
++    .from(userTenantMappings)
++    .where(eq(userTenantMappings.userId, user.id))
++    .limit(1);
++
++  const mapping = mappingRows[0];
++
++  if (!mapping) {
++    return NextResponse.json(
++      errorResponse(
++        "FORBIDDEN",
++        "Usuario sem vinculacao de tenant.",
++        correlationId,
++      ),
++      { status: 403 },
++    );
++  }
++
++  const ipAddress = request.headers.get("x-forwarded-for") ?? undefined;
++  const userAgent = request.headers.get("user-agent") ?? undefined;
++
++  const session = await createSession({
++    userId: user.id,
++    tenantId: mapping.tenantId,
++    ipAddress,
++    userAgent,
++  });
++
++  await writeAuthAudit({
++    tenantId: mapping.tenantId,
++    actorId: user.id,
++    action: "auth.login",
++    status: "success",
++    correlationId,
++    ipAddress,
++    details: { role: mapping.role },
++  });
++
++  const response = NextResponse.json(
++    successResponse(
++      {
++        userId: user.id,
++        email: user.email,
++        tenantId: mapping.tenantId,
++        role: mapping.role,
++      },
++      correlationId,
++      mapping.tenantId,
++    ),
++  );
++
++  response.cookies.set(
++    SESSION_COOKIE_NAME,
++    session.token,
++    getSessionCookieOptions(session.expiresAt),
++  );
++
++  return response;
++}
+diff --git a/src/app/api/v1/auth/logout/route.ts b/src/app/api/v1/auth/logout/route.ts
+new file mode 100644
+index 0000000..b2216ee
+--- /dev/null
++++ b/src/app/api/v1/auth/logout/route.ts
+@@ -0,0 +1,41 @@
++import { NextRequest, NextResponse } from "next/server";
++import {
++  SESSION_COOKIE_NAME,
++} from "@/lib/auth/cookies";
++import { writeAuthAudit } from "@/lib/auth/audit";
++import { invalidateSession, validateSession } from "@/lib/auth/session";
++import { successResponse } from "@/lib/api/response";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++
++export async function POST(request: NextRequest) {
++  const correlationId = resolveCorrelationId(
++    request.headers.get(CORRELATION_ID_HEADER),
++  );
++
++  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++
++  if (token) {
++    const session = await validateSession(token);
++    if (session) {
++      await writeAuthAudit({
++        tenantId: session.tenantId,
++        actorId: session.userId,
++        action: "auth.logout",
++        status: "success",
++        correlationId,
++      });
++    }
++
++    await invalidateSession(token);
++  }
++
++  const response = NextResponse.json(
++    successResponse({ loggedOut: true }, correlationId),
++  );
++
++  response.cookies.delete(SESSION_COOKIE_NAME);
++  return response;
++}
+diff --git a/src/app/api/v1/auth/refresh/route.ts b/src/app/api/v1/auth/refresh/route.ts
+new file mode 100644
+index 0000000..a5fc743
+--- /dev/null
++++ b/src/app/api/v1/auth/refresh/route.ts
+@@ -0,0 +1,68 @@
++import { NextRequest, NextResponse } from "next/server";
++import {
++  getSessionCookieOptions,
++  SESSION_COOKIE_NAME,
++} from "@/lib/auth/cookies";
++import { writeAuthAudit } from "@/lib/auth/audit";
++import { errorResponse, successResponse } from "@/lib/api/response";
++import { rotateSession } from "@/lib/auth/session";
++import {
++  CORRELATION_ID_HEADER,
++  resolveCorrelationId,
++} from "@/lib/observability/correlation-id";
++
++export async function POST(request: NextRequest) {
++  const correlationId = resolveCorrelationId(
++    request.headers.get(CORRELATION_ID_HEADER),
++  );
++
++  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
++
++  if (!token) {
++    return NextResponse.json(
++      errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId),
++      { status: 401 },
++    );
++  }
++
++  const ipAddress = request.headers.get("x-forwarded-for") ?? undefined;
++  const userAgent = request.headers.get("user-agent") ?? undefined;
++
++  const rotated = await rotateSession({ token, ipAddress, userAgent });
++
++  if (!rotated) {
++    return NextResponse.json(
++      errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
++      { status: 401 },
++    );
++  }
++
++  await writeAuthAudit({
++    tenantId: rotated.session.tenantId,
++    actorId: rotated.session.userId,
++    action: "auth.refresh",
++    status: "success",
++    correlationId,
++    ipAddress,
++  });
++
++  const response = NextResponse.json(
++    successResponse(
++      {
++        refreshed: true,
++        userId: rotated.session.userId,
++        tenantId: rotated.session.tenantId,
++      },
++      correlationId,
++      rotated.session.tenantId,
++    ),
++  );
++
++  response.cookies.set(
++    SESSION_COOKIE_NAME,
++    rotated.token,
++    getSessionCookieOptions(rotated.expiresAt),
++  );
++
++  return response;
++}
+diff --git a/__tests__/password.test.ts b/__tests__/password.test.ts
+new file mode 100644
+index 0000000..1722236
+--- /dev/null
++++ b/__tests__/password.test.ts
+@@ -0,0 +1,13 @@
++import { describe, expect, it } from "vitest";
++import { hashPassword, verifyPassword } from "@/lib/auth/password";
++
++describe("password hashing", () => {
++  it("hashes password and verifies correctly", async () => {
++    const plain = "TempPassw0rd!";
++    const hash = await hashPassword(plain);
++
++    expect(hash).not.toBe(plain);
++    await expect(verifyPassword(plain, hash)).resolves.toBe(true);
++    await expect(verifyPassword("wrong-pass", hash)).resolves.toBe(false);
++  });
++});
+diff --git a/__tests__/auth-cookies.test.ts b/__tests__/auth-cookies.test.ts
+new file mode 100644
+index 0000000..966351f
+--- /dev/null
++++ b/__tests__/auth-cookies.test.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import {
++  getSessionCookieOptions,
++  getSessionExpiration,
++  SESSION_COOKIE_NAME,
++} from "@/lib/auth/cookies";
++
++describe("auth cookies", () => {
++  it("uses session cookie name contract", () => {
++    expect(SESSION_COOKIE_NAME).toBe("session_id");
++  });
++
++  it("creates secure cookie options structure", () => {
++    const expiresAt = getSessionExpiration(new Date("2026-01-01T00:00:00.000Z"));
++    const options = getSessionCookieOptions(expiresAt);
++
++    expect(options.httpOnly).toBe(true);
++    expect(options.sameSite).toBe("lax");
++    expect(options.path).toBe("/");
++    expect(options.expires).toBeInstanceOf(Date);
++  });
++});
+diff --git a/__tests__/session-expiration.test.ts b/__tests__/session-expiration.test.ts
+new file mode 100644
+index 0000000..4ff64ee
+--- /dev/null
++++ b/__tests__/session-expiration.test.ts
+@@ -0,0 +1,11 @@
++import { describe, expect, it } from "vitest";
++import { getSessionExpiration } from "@/lib/auth/cookies";
++
++describe("session expiration", () => {
++  it("sets inactivity expiration to 30 minutes", () => {
++    const base = new Date("2026-04-08T18:00:00.000Z");
++    const expiresAt = getSessionExpiration(base);
++
++    expect(expiresAt.toISOString()).toBe("2026-04-08T18:30:00.000Z");
++  });
++});

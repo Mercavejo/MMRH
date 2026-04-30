@@ -1,0 +1,9 @@
+const fs = require('fs');
+const path = require('path');
+const dir = path.join(process.cwd(), 'public', 'assets', 'demo');
+if (!fs.existsSync(dir)) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+const b64 = "JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5kb2JqCjIgMCBvYmoKPDwKL1R5cGUgL1BhZ2VzCi9LaWRzIFszIDAgUiA0IDAgUl0KL0NvdW50IDIKPj4KZW5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL1BhZ2UKL1BhcmVudCAyIDAgUgovTWVkaWFCb3ggWzAgMCAyMDAgMjAwXQovQ29udGVudHMgNSAwIFIKPj4KZW5kb2JqCjQgMCBvYmoKPDwKL1R5cGUgL1BhZ2UKL1BhcmVudCAyIDAgUgovTWVkaWFCb3ggWzAgMCAyMDAgMjAwXQovQ29udGVudHMgNiAwIFIKPj4KZW5kb2JqCjUgMCBvYmoKPDwKL0xlbmd0aCAzOQo+PgpzdHJlYW0KQlQKL0YxIDI0IFRmCjEwIDEwIFRkCihQYWdlIDEpIFRqCkVUCmVuZHN0cmVhbQplbmRvYmoKNiAwIG9iago8PAovTGVuZ3RoIDM5Cj4+CnN0cmVhbQpCVAovRjEgMjQgVGYKMTAgMTAgVGQKKFBhZ2UgMikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iago3IDAgb2JqCjw8Ci9UeXBlIC9Gb250Ci9TdWJ0eXBlIC9UeXBlMQovTmFtZSAvRjEKL0Jhc2VGb250IC9IZWx2ZXRpY2EKPj4KZW5kb2JqCnhyZWYKMCA4CjAwMDAwMDAwMDAgNjUzMzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDYwIDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKMDAwMDAwMDIxNCAwMDAwMCBuIAowMDAwMDAwMzAzIDAwMDAwIG4gCjAwMDAwMDAzOTMgMDAwMDAgbiAKMDAwMDAwMDQ4MyAwMDAwMCBuIAp0cmFpbGVyCjw8Ci9TaXplIDgKL1Jvb3QgMSAwIFIKPj4Kc3RhcnR4cmVmCjU3MwolJUVPRgo=";
+fs.writeFileSync(path.join(dir, 'sample-multipagina.pdf'), Buffer.from(b64, 'base64'));
+console.log('PDF created at: ' + path.join(dir, 'sample-multipagina.pdf'));

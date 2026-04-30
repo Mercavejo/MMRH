@@ -8,6 +8,9 @@ export type ApiMeta = {
   correlation_id: string;
   timestamp?: string;
   tenant_id?: string;
+  plan_code?: string | null;
+  response_time_ms?: number;
+  [key: string]: unknown;
 };
 
 export type ApiResponse<T> = {
@@ -20,6 +23,7 @@ export function successResponse<T>(
   data: T,
   correlationId: string,
   tenantId?: string,
+  extraMeta?: Partial<ApiMeta>,
 ): ApiResponse<T> {
   return {
     data,
@@ -28,6 +32,7 @@ export function successResponse<T>(
       correlation_id: correlationId,
       timestamp: new Date().toISOString(),
       tenant_id: tenantId,
+      ...extraMeta,
     },
   };
 }
@@ -38,6 +43,7 @@ export function errorResponse<T>(
   correlationId: string,
   details?: Record<string, unknown>,
   tenantId?: string,
+  extraMeta?: Partial<ApiMeta>,
 ): ApiResponse<T> {
   return {
     data: null,
@@ -50,6 +56,7 @@ export function errorResponse<T>(
       correlation_id: correlationId,
       timestamp: new Date().toISOString(),
       tenant_id: tenantId,
+      ...extraMeta,
     },
   };
 }

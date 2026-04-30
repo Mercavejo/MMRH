@@ -78,6 +78,10 @@ vi.mock("@/modules/integrations/application/list-external-ingestions", () => ({
   ExternalIngestionError,
 }));
 
+vi.mock("@/modules/plans/application/enforce-capability", () => ({
+  enforceCapability: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { GET, POST, PUT } from "@/app/api/v1/webhooks/integrations/route";
 
 describe("external ingestions api", () => {

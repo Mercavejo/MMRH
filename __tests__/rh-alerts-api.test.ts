@@ -9,7 +9,10 @@ const {
   dbFromMock,
   dbWhereMock,
   dbLimitMock,
+  dbInsertMock,
+  dbInsertValuesMock,
   getOperationalAlertsMock,
+  writePlaytestEventMock,
   OperationalAlertsError,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
@@ -17,7 +20,10 @@ const {
   dbFromMock: vi.fn(),
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
+  dbInsertMock: vi.fn(),
+  dbInsertValuesMock: vi.fn(),
   getOperationalAlertsMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
   OperationalAlertsError: class extends Error {
     constructor(
       public readonly code: string,
@@ -41,9 +47,15 @@ vi.mock("@/lib/db/client", () => ({
           limit: dbLimitMock,
         }),
       }),
-      insert: vi.fn(),
+    }),
+    insert: dbInsertMock.mockReturnValue({
+      values: dbInsertValuesMock,
     }),
   },
+}));
+
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
 }));
 
 vi.mock("@/modules/alerts/application/get-operational-alerts", () => ({
@@ -63,6 +75,8 @@ describe("rh alerts api", () => {
     });
 
     dbLimitMock.mockResolvedValue([{ role: "admin_plataforma" }]);
+    writePlaytestEventMock.mockResolvedValue(undefined);
+    dbInsertValuesMock.mockResolvedValue(undefined);
 
     getOperationalAlertsMock.mockResolvedValue({
       alerts: [
@@ -120,6 +134,13 @@ describe("rh alerts api", () => {
         severity: "critical",
       }),
     );
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.alerts.view",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "admin_plataforma" }),
+      }),
+    );
   });
 
   it("returns 400 for invalid query", async () => {
@@ -158,7 +179,7 @@ describe("rh alerts api", () => {
   });
 
   it("returns 403 for unauthorized role", async () => {
-    dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
 
     const request = new NextRequest("http://localhost/api/v1/rh/alerts", {
       method: "GET",
@@ -169,6 +190,13 @@ describe("rh alerts api", () => {
 
     expect(response.status).toBe(403);
     expect(getOperationalAlertsMock).not.toHaveBeenCalled();
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.boundary.gestor.blocked",
+        status: "success",
+        details: expect.objectContaining({ actor_role: "rh_gestor" }),
+      }),
+    );
   });
 
   it("maps domain errors", async () => {

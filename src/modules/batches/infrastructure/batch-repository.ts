@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { batches, exceptions } from "@/lib/db/schema";
+import type { BatchRoutingManifestItem } from "@/lib/rh/batches/batch-routing";
 
 type DbLike = Pick<typeof db, "select" | "update">;
 
@@ -9,6 +10,10 @@ export type BatchPublicationSnapshot = {
   tenantId: string;
   validationStatus: string;
   routingStatus: string;
+  sourceStorageKey: string | null;
+  sourceStorageFilename: string | null;
+  sourceStorageMimeType: string | null;
+  routingManifest: BatchRoutingManifestItem[];
   routingTotalCount: number;
   routingMatchedCount: number;
   routingPendingCount: number;
@@ -35,6 +40,10 @@ export async function loadBatchPublicationSnapshot(
       tenantId: batches.tenantId,
       validationStatus: batches.validationStatus,
       routingStatus: batches.routingStatus,
+      sourceStorageKey: batches.sourceStorageKey,
+      sourceStorageFilename: batches.sourceStorageFilename,
+      sourceStorageMimeType: batches.sourceStorageMimeType,
+      routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
       routingPendingCount: batches.routingPendingCount,
@@ -106,6 +115,10 @@ export async function markBatchPublicationStarting(
       tenantId: batches.tenantId,
       validationStatus: batches.validationStatus,
       routingStatus: batches.routingStatus,
+      sourceStorageKey: batches.sourceStorageKey,
+      sourceStorageFilename: batches.sourceStorageFilename,
+      sourceStorageMimeType: batches.sourceStorageMimeType,
+      routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
       routingPendingCount: batches.routingPendingCount,
@@ -185,6 +198,10 @@ export async function loadLatestBatch(
       tenantId: batches.tenantId,
       validationStatus: batches.validationStatus,
       routingStatus: batches.routingStatus,
+      sourceStorageKey: batches.sourceStorageKey,
+      sourceStorageFilename: batches.sourceStorageFilename,
+      sourceStorageMimeType: batches.sourceStorageMimeType,
+      routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
       routingPendingCount: batches.routingPendingCount,

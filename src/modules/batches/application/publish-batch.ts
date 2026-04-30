@@ -1,5 +1,9 @@
 import { db } from "@/lib/db/client";
 import { buildDomainEvent, publishDomainEvent } from "@/lib/events/publisher";
+import {
+  EmployeeDocumentPublicationError,
+  publishEmployeeDocumentsForBatch,
+} from "@/lib/documents/publish-employee-documents";
 import { buildBatchRoutingProgressFromRecord } from "@/lib/rh/batches/batch-progress";
 import { writeBatchPublicationAudit } from "@/lib/rh/batches/publish-audit";
 import {
@@ -29,6 +33,38 @@ export type PublishBatchResult = ReturnType<typeof buildBatchRoutingProgressFrom
   total_skipped: number;
   total_failed: number;
 };
+
+function mapPublicationFailure(error: unknown): BatchPublicationError | null {
+  if (error instanceof EmployeeDocumentPublicationError) {
+    const statusCode =
+      error.code === "PUBLICATION_SOURCE_ARTIFACT_MISSING" ||
+      error.code === "PUBLICATION_ARTIFACT_UNAVAILABLE"
+        ? 503
+        : 409;
+
+    return new BatchPublicationError(error.code, error.message, statusCode, error.details);
+  }
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "cause" in error &&
+    typeof (error as { cause?: unknown }).cause === "object" &&
+    (error as { cause?: { code?: string; message?: string } }).cause?.code === "42P01" &&
+    (error as { cause?: { message?: string } }).cause?.message?.includes("employee_identities")
+  ) {
+    return new BatchPublicationError(
+      "PUBLICATION_DEPENDENCY_UNAVAILABLE",
+      "Cadastro funcional indisponivel para publicar lote.",
+      409,
+      {
+        relation: "employee_identities",
+      },
+    );
+  }
+
+  return null;
+}
 
 function buildPublishedResult(snapshot: BatchPublicationSnapshot): PublishBatchResult {
   const routingProgress = buildBatchRoutingProgressFromRecord({
@@ -153,35 +189,70 @@ export async function publishBatch(input: {
     );
   }
 
-  const reservation = await dbClient.transaction(async (transaction) => {
-    const startedSnapshot = await markBatchPublicationStarting(
-      {
-        tenantId: input.tenantId,
-        batchId: input.batchId,
-        correlationId: input.correlationId,
-        idempotencyKey: input.idempotencyKey,
-        currentPublicationAttempts: snapshot.publicationAttempts,
-      },
-      transaction,
-    );
+  let reservation: BatchPublicationSnapshot | null;
 
-    if (!startedSnapshot) {
-      return null;
+  try {
+    reservation = await dbClient.transaction(async (transaction) => {
+      const startedSnapshot = await markBatchPublicationStarting(
+        {
+          tenantId: input.tenantId,
+          batchId: input.batchId,
+          correlationId: input.correlationId,
+          idempotencyKey: input.idempotencyKey,
+          currentPublicationAttempts: snapshot.publicationAttempts,
+        },
+        transaction,
+      );
+
+      if (!startedSnapshot) {
+        return null;
+      }
+
+      await publishEmployeeDocumentsForBatch(
+        {
+          tenantId: input.tenantId,
+          batchId: input.batchId,
+          sourceStorageKey: snapshot.sourceStorageKey,
+          sourceStorageFilename: snapshot.sourceStorageFilename,
+          sourceStorageMimeType: snapshot.sourceStorageMimeType,
+          routingManifest: snapshot.routingManifest,
+        },
+        transaction,
+      );
+
+      await markBatchPublicationSucceeded(
+        {
+          tenantId: input.tenantId,
+          batchId: input.batchId,
+          actorId: input.actorId,
+          correlationId: input.correlationId,
+          idempotencyKey: input.idempotencyKey,
+        },
+        transaction,
+      );
+
+      return startedSnapshot;
+    });
+  } catch (error) {
+    const mappedError = mapPublicationFailure(error);
+
+    if (mappedError) {
+      await markBatchPublicationFailed(
+        {
+          tenantId: input.tenantId,
+          batchId: input.batchId,
+          correlationId: input.correlationId,
+          idempotencyKey: input.idempotencyKey,
+          errorMessage: mappedError.message,
+        },
+        dbClient,
+      );
+
+      throw mappedError;
     }
 
-    await markBatchPublicationSucceeded(
-      {
-        tenantId: input.tenantId,
-        batchId: input.batchId,
-        actorId: input.actorId,
-        correlationId: input.correlationId,
-        idempotencyKey: input.idempotencyKey,
-      },
-      transaction,
-    );
-
-    return startedSnapshot;
-  });
+    throw error;
+  }
 
   if (!reservation) {
     const currentSnapshot = await loadBatchPublicationSnapshot(

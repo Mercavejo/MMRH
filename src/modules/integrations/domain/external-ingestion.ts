@@ -463,5 +463,12 @@ export function buildExternalIngestionTimeline(ingestion: {
     });
   }
 
-  return buildAuditTimeline(items);
+  return buildAuditTimeline(
+    items.map((item) => ({
+      id: item.event_id,
+      action: item.action,
+      status: item.status,
+      created_at: item.occurred_at,
+    })),
+  );
 }

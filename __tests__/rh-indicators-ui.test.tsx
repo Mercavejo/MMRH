@@ -5,7 +5,7 @@ import {
 } from "@/components/indicators/operational-indicators-dashboard";
 import {
   RhOperationalIndicatorsView,
-} from "@/app/(rh)/indicadores/page";
+} from "@/app/rh/indicadores/page";
 
 describe("rh indicators ui", () => {
   it("renders dashboard cards with indicators", () => {
@@ -47,6 +47,8 @@ describe("rh indicators ui", () => {
           from: "2026-04-10T00:00:00.000Z",
           to: "2026-04-13T23:59:59.999Z",
           organizational_unit: "financeiro",
+          status: "",
+          severity: "",
         }}
         isEmpty={false}
         errorMessage={null}
@@ -60,6 +62,13 @@ describe("rh indicators ui", () => {
             routingTotalItems: 640,
             routingMatchedItems: 627,
           },
+        }}
+        alerts={[]}
+        alertsMetadata={{
+          total: 0,
+          open_count: 0,
+          in_treatment_count: 0,
+          resolved_count: 0,
         }}
       />,
     );

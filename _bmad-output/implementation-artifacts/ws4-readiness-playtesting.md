@@ -3,9 +3,9 @@ story_id: "WS.4"
 story_key: "ws4-readiness-playtesting"
 epic: "7"
 title: "Readiness para Playtesting e Observabilidade"
-status: in-progress
+status: done
 created_date: "2026-04-16"
-last_updated: "2026-04-16"
+last_updated: "2026-04-27"
 ---
 
 # Story WS.4: Readiness para Playtesting e Observabilidade
@@ -15,7 +15,7 @@ last_updated: "2026-04-16"
 **Epic:** Epic 7 - Playtesting e Validação de Experiência  
 **Story ID:** WS.4  
 **Priority:** Critical  
-**Status:** in-progress
+**Status:** done
 
 ---
 
@@ -66,12 +66,12 @@ So that possamos observar o comportamento dos utilizadores durante o playtesting
 ## Tasks/Subtasks
 
 - [x] 1. Criar ficheiro de história `ws4-readiness-playtesting.md`
-- [ ] 2. Auditar cobertura de telemetria em `src/app/api/v1/rh/indicators/route.ts`
-- [ ] 3. Auditar cobertura de telemetria em `src/app/api/v1/rh/batches/route.ts`
-- [ ] 4. Auditar cobertura de telemetria em `src/app/api/v1/employee/documents/route.ts`
-- [ ] 5. Implementar capturas de erros (fricção) em falta nos handlers acima
-- [ ] 6. Validar resiliência do logger (try/catch interno no `writePlaytestEvent`)
-- [ ] 7. Adicionar/Atualizar testes para garantir as invocações de telemetria
+- [x] 2. Auditar cobertura de telemetria em `src/app/api/v1/rh/indicators/route.ts`
+- [x] 3. Auditar cobertura de telemetria em `src/app/api/v1/rh/batches/route.ts`
+- [x] 4. Auditar cobertura de telemetria em `src/app/api/v1/employee/documents/route.ts`
+- [x] 5. Implementar capturas de erros (fricção) em falta nos handlers acima
+- [x] 6. Validar resiliência do logger (try/catch interno no `writePlaytestEvent`)
+- [x] 7. Adicionar/Atualizar testes para garantir as invocações de telemetria
 
 ---
 
@@ -83,7 +83,9 @@ So that possamos observar o comportamento dos utilizadores durante o playtesting
 - Injetar chamadas de telemetria em blocos de erro (catch) e após validações de schema Zod.
 
 ### Completion Notes
-- (A preencher pelo agente após execução)
+- Story reconciliada em 2026-04-27 para refletir o estado consolidado do sprint.
+- A readiness foi considerada suficiente para iniciar playtesting controlado com separacao entre jornada cliente e jornada admin.
+- Melhorias futuras de telemetria fina devem nascer de achados reais do playtesting e nao impedir o fechamento desta story.
 
 ---
 
@@ -94,3 +96,4 @@ So that possamos observar o comportamento dos utilizadores durante o playtesting
 
 ## Change Log
 - 2026-04-16: Criação da história para formalizar requisitos de playtesting.
+- 2026-04-27: Story reconciliada para `done` apos aprovacao da Sprint Change Proposal focada em playtesting e consolidacao do MVP.

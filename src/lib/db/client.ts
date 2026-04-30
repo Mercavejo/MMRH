@@ -14,6 +14,8 @@ function getDbClient(): ReturnType<typeof drizzle> {
   if (!clientDb) {
     const client = postgres(connectionString, {
       max: Number.isNaN(maxPoolSize) || maxPoolSize < 1 ? 10 : maxPoolSize,
+      prepare: false, // Necessário para compatibilidade com o Pooler do Supabase (Modo Transaction)
+      ssl: "require",
     });
 
     clientDb = drizzle(client, { schema });

@@ -1,6 +1,7 @@
-import { pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { integer, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { users } from "./users";
+import { batches } from "./batches";
 
 export const documentStatusEnum = pgEnum("document_status", [
   "published",
@@ -18,8 +19,14 @@ export const employeeDocuments = pgTable("employee_documents", {
   userId: uuid("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "restrict" }),
+  batchId: uuid("batch_id")
+    .references(() => batches.id, { onDelete: "set null" }),
   documentType: text("document_type").notNull(),
   periodRef: text("period_ref").notNull(),
+  storageKey: text("storage_key"),
+  fileName: text("file_name"),
+  mimeType: text("mime_type"),
+  sourcePageIndex: integer("source_page_index"),
   status: documentStatusEnum("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

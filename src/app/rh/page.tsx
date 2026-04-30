@@ -18,17 +18,27 @@ import {
   CloudUpload as UploadIcon
 } from '@mui/icons-material';
 import { tokens } from '@/lib/theme/tokens';
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings, users } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
+import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
 import { getDashboardSummary } from '@/modules/indicators/application/get-dashboard-summary';
 import { loadLatestBatch, type BatchPublicationSnapshot } from '@/modules/batches/infrastructure/batch-repository';
 import { CountUpValue } from '@/components/ui/CountUpValue';
 import { ErrorAlert } from '@/components/ui/ErrorAlert';
+
+async function recordPlaytestEvent(params: Parameters<typeof writePlaytestEvent>[0]) {
+  try {
+    await writePlaytestEvent(params);
+  } catch (error) {
+    console.error("[playtest.dashboard] Falha ao registrar evento", error);
+  }
+}
 
 function formatRelativeTime(date: Date | string | null) {
   if (!date) return '';
@@ -78,6 +88,8 @@ function formatBatchStatus(status: string | null) {
 
 export default async function RHDashboardPage() {
   const cookieStore = await cookies();
+  const headerStore = await headers();
+  const correlationId = resolveCorrelationId(headerStore.get(CORRELATION_ID_HEADER));
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   const session = token ? await validateSession(token) : null;
   
@@ -90,14 +102,41 @@ export default async function RHDashboardPage() {
     redirect('/login');
   }
 
-  const isInternalRole = ['admin_plataforma', 'suporte', 'rh'].includes(userData.role);
+  const isInternalRole = ['admin_plataforma', 'suporte'].includes(userData.role);
 
   if (!isInternalRole) {
     let latestBatch: BatchPublicationSnapshot | null = null;
 
     try {
       latestBatch = await loadLatestBatch({ tenantId: session.tenantId });
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.dashboard.view",
+        resourceType: "dashboard",
+        resourceId: "client_dashboard",
+        status: "success",
+        details: {
+          latest_batch_id: latestBatch?.id ?? null,
+          publication_status: latestBatch?.publicationStatus ?? null,
+          routing_status: latestBatch?.routingStatus ?? null,
+        },
+      });
     } catch {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.dashboard.friction",
+        resourceType: "dashboard",
+        resourceId: "client_dashboard",
+        status: "failure",
+        details: {
+          cause: "internal_error",
+          reason: "Falha ao carregar ultimo lote do dashboard cliente",
+        },
+      });
       return (
         <ErrorAlert
           message="Não foi possível carregar o painel de envios."
@@ -112,7 +151,33 @@ export default async function RHDashboardPage() {
   let dashboardData: Awaited<ReturnType<typeof getDashboardSummary>>;
   try {
     dashboardData = await getDashboardSummary({ tenantId: session.tenantId });
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.dashboard.internal.view",
+      resourceType: "dashboard",
+      resourceId: "internal_dashboard",
+      status: "success",
+      details: {
+        actor_role: userData.role,
+      },
+    });
   } catch {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.dashboard.internal.friction",
+      resourceType: "dashboard",
+      resourceId: "internal_dashboard",
+      status: "failure",
+      details: {
+        actor_role: userData.role,
+        cause: "internal_error",
+        reason: "Falha ao carregar painel interno",
+      },
+    });
     return (
       <ErrorAlert
         message="Não foi possível carregar o painel de gestão."
@@ -123,6 +188,10 @@ export default async function RHDashboardPage() {
 
   const { summary, recentActivities } = dashboardData;
   const hasData = summary.totalBatches > 0;
+
+  const canManageBatches = userData.role === "admin_plataforma";
+  const canReviewExceptions = userData.role === "admin_plataforma";
+  const canReviewAudit = ["admin_plataforma", "suporte"].includes(userData.role);
 
   return (
     <Box>
@@ -144,14 +213,16 @@ export default async function RHDashboardPage() {
               Visão geral da operação, indicadores de performance e tratamento de exceções.
             </Typography>
           </Box>
-          <Button
-            href="/rh/lotes"
-            variant="contained"
-            startIcon={<UploadIcon />}
-            sx={{ px: 4, py: 1.5, width: { xs: '100%', sm: 'auto' } }}
-          >
-            Importar Novo Relatório
-          </Button>
+          {canManageBatches ? (
+            <Button
+              href="/rh/lotes"
+              variant="contained"
+              startIcon={<UploadIcon />}
+              sx={{ px: 4, py: 1.5, width: { xs: '100%', sm: 'auto' } }}
+            >
+              Importar Novo Relatório
+            </Button>
+          ) : null}
         </Box>
 
         {!hasData ? (
@@ -207,9 +278,11 @@ export default async function RHDashboardPage() {
                   <Stack spacing={3}>
                     <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: { xs: 'stretch', sm: 'center' }, gap: 2 }}>
                       <Typography variant="h3">Atividades Recentes</Typography>
-                      <Button href="/rh/auditoria" variant="text" endIcon={<ArrowIcon />}>
-                        Ver Auditoria Completa
-                      </Button>
+                      {canReviewAudit ? (
+                        <Button href="/rh/auditoria" variant="text" endIcon={<ArrowIcon />}>
+                          Ver Auditoria Completa
+                        </Button>
+                      ) : null}
                     </Box>
                     
                     <Stack spacing={2}>
@@ -245,9 +318,15 @@ export default async function RHDashboardPage() {
                   >
                     <Typography variant="h3" sx={{ color: 'white', mb: 2 }}>Acesso Rápido</Typography>
                     <Stack spacing={1}>
-                      <QuickActionButton label="Processamento de Lotes" href="/rh/lotes" />
-                      <QuickActionButton label="Exportar Relatório de Auditoria" href="/rh/auditoria" />
-                      <QuickActionButton label="Fila de Exceções" href="/rh/excecoes" />
+                      {canManageBatches ? (
+                        <QuickActionButton label="Processamento de Lotes" href="/rh/lotes" />
+                      ) : null}
+                      {canReviewAudit ? (
+                        <QuickActionButton label="Exportar Relatório de Auditoria" href="/rh/auditoria" />
+                      ) : null}
+                      {canReviewExceptions ? (
+                        <QuickActionButton label="Fila de Exceções" href="/rh/excecoes" />
+                      ) : null}
                     </Stack>
                   </Paper>
 

@@ -19,6 +19,8 @@ const {
   writeBatchRoutingAuditMock,
   writeBatchReprocessAuditMock,
   reprocessExceptionsForBatchMock,
+  writePlaytestEventMock,
+  enforceCapabilityMock,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
   dbSelectMock: vi.fn(),
@@ -34,6 +36,8 @@ const {
   writeBatchRoutingAuditMock: vi.fn(),
   writeBatchReprocessAuditMock: vi.fn(),
   reprocessExceptionsForBatchMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
+  enforceCapabilityMock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ validateSession: validateSessionMock }));
@@ -75,6 +79,14 @@ vi.mock("@/lib/db/client", () => ({
       }),
     }),
   },
+}));
+
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
+}));
+
+vi.mock("@/modules/plans/application/enforce-capability", () => ({
+  enforceCapability: enforceCapabilityMock,
 }));
 
 import { POST } from "@/app/api/v1/rh/batches/route";
@@ -137,6 +149,8 @@ describe("rh batch import api", () => {
     dbUpdateWhereMock.mockResolvedValue(undefined);
     writeBatchRoutingAuditMock.mockResolvedValue(undefined);
     writeBatchReprocessAuditMock.mockResolvedValue(undefined);
+    writePlaytestEventMock.mockResolvedValue(undefined);
+    enforceCapabilityMock.mockResolvedValue(undefined);
     reprocessExceptionsForBatchMock.mockResolvedValue({
       batch_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       idempotency_key: "idem-key-123",
@@ -192,6 +206,36 @@ describe("rh batch import api", () => {
     );
   });
 
+  it("allows rh gestor to import batch reports for playtesting", async () => {
+    dbLimitMock.mockResolvedValue([{ role: "rh_gestor" }]);
+
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([
+        "employee_identifier,document_type,period_ref\n123,holerite,2026-03",
+      ], "lote-rh.csv", { type: "text/csv" }),
+    );
+
+    const request = new NextRequest("http://localhost/api/v1/rh/batches", {
+      method: "POST",
+      headers: { cookie: "session_id=token" },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.data.batch_id).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    expect(validateBatchImportFileMock).toHaveBeenCalled();
+    expect(persistValidatedBatchImportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: SESSION_TENANT_ID }),
+      expect.anything(),
+    );
+    expect(enforceCapabilityMock).not.toHaveBeenCalled();
+  });
+
   it("rejects requests without session", async () => {
     const formData = new FormData();
     formData.append("file", new File(["employee_identifier,document_type,period_ref\n123,holerite,2026-03"], "lote-rh.csv", { type: "text/csv" }));
@@ -208,7 +252,7 @@ describe("rh batch import api", () => {
     expect(body.error.code).toBe("UNAUTHORIZED");
   });
 
-  it("rejects non-rh operator role", async () => {
+  it("rejects non-rh import role", async () => {
     dbLimitMock.mockResolvedValue([{ role: "colaborador" }]);
 
     const formData = new FormData();
@@ -272,9 +316,68 @@ describe("rh batch import api", () => {
     );
   });
 
+  it("logs playtest friction on internal server error (500) during capability check", async () => {
+    enforceCapabilityMock.mockRejectedValue(new Error("Plan service timed out"));
+
+    const formData = new FormData();
+    formData.append("file", new File(["..."], "lote-rh.csv", { type: "text/csv" }));
+
+    const request = new NextRequest("http://localhost/api/v1/rh/batches", {
+      method: "POST",
+      headers: { cookie: "session_id=token" },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    
+    expect(response.status).toBe(500);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ 
+        action: "playtest.rh.batches.friction", 
+        status: "failure", 
+        details: expect.objectContaining({ cause: "internal_error", error: "Plan service timed out" }) 
+      })
+    );
+  });
+
+  it("returns controlled 500 when batch validation/import throws unexpectedly", async () => {
+    validateBatchImportFileMock.mockRejectedValue(new Error("pdf runtime exploded"));
+
+    const formData = new FormData();
+    formData.append("file", new File(["%PDF-1.7"], "lote.pdf", { type: "application/pdf" }));
+
+    const request = new NextRequest("http://localhost/api/v1/rh/batches", {
+      method: "POST",
+      headers: {
+        cookie: "session_id=token",
+        "x-correlation-id": "33333333-3333-4333-8333-333333333333",
+      },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("x-correlation-id")).toBe(
+      "33333333-3333-4333-8333-333333333333",
+    );
+    expect(body.error.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.batches.friction",
+        status: "failure",
+        details: expect.objectContaining({
+          cause: "internal_error",
+          error: "pdf runtime exploded",
+        }),
+      }),
+    );
+  });
+
   it("returns progress for a validated batch", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "rh_gestor" }])
       .mockResolvedValueOnce([
         {
           id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -311,6 +414,51 @@ describe("rh batch import api", () => {
     expect(response.headers.get("x-correlation-id")).toBe(
       "11111111-1111-4111-8111-111111111111",
     );
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.batches.history.view",
+        status: "success",
+        resourceType: "batches",
+      }),
+    );
+  });
+
+  it("returns batch progress even when playtest logging fails", async () => {
+    dbLimitMock
+      .mockResolvedValueOnce([{ role: "rh_gestor" }])
+      .mockResolvedValueOnce([
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          tenantId: SESSION_TENANT_ID,
+          routingStatus: "pending",
+          routingTotalCount: 2,
+          routingMatchedCount: 0,
+          routingPendingCount: 2,
+          routingFailedCount: 0,
+          routingAmbiguousCount: 0,
+          routingBlockedReason: null,
+          routingProcessedAt: null,
+        },
+      ]);
+    writePlaytestEventMock.mockRejectedValue(new Error("audit unavailable"));
+
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      {
+        headers: {
+          cookie: "session_id=token",
+          "x-correlation-id": "11111111-1111-4111-8111-111111111111",
+        },
+      },
+    );
+
+    const response = await GET_BATCH_DETAILS(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.routing_status).toBe("pending");
   });
 
   it("processes a batch and blocks ambiguous documents", async () => {
@@ -397,7 +545,7 @@ describe("rh batch import api", () => {
 
   it("rejects tenant mismatches when reading batch progress", async () => {
     dbLimitMock
-      .mockResolvedValueOnce([{ role: "rh_operator" }])
+      .mockResolvedValueOnce([{ role: "rh_gestor" }])
       .mockResolvedValueOnce([
         {
           id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -425,6 +573,13 @@ describe("rh batch import api", () => {
     });
 
     expect(response.status).toBe(403);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "playtest.rh.batches.history.friction",
+        status: "failure",
+        details: expect.objectContaining({ cause: "forbidden" }),
+      }),
+    );
   });
 
   it("reprocesses eligible exceptions with idempotency key", async () => {

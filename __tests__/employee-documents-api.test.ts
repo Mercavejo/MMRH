@@ -10,6 +10,7 @@ const {
   dbFromMock,
   dbWhereMock,
   dbLimitMock,
+  writePlaytestEventMock,
 } = vi.hoisted(() => ({
   validateSessionMock: vi.fn(),
   listEmployeeDocumentsMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   dbFromMock: vi.fn(),
   dbWhereMock: vi.fn(),
   dbLimitMock: vi.fn(),
+  writePlaytestEventMock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({
@@ -25,6 +27,10 @@ vi.mock("@/lib/auth/session", () => ({
 
 vi.mock("@/lib/documents/list-documents", () => ({
   listEmployeeDocuments: listEmployeeDocumentsMock,
+}));
+
+vi.mock("@/lib/observability/playtest-audit", () => ({
+  writePlaytestEvent: writePlaytestEventMock,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -65,6 +71,8 @@ describe("employee documents api", () => {
         created_at: "2026-04-01T10:00:00.000Z",
       },
     ]);
+
+    writePlaytestEventMock.mockResolvedValue(undefined);
   });
 
   it("returns employee documents with valid session and filters", async () => {
@@ -80,12 +88,16 @@ describe("employee documents api", () => {
 
     expect(response.status).toBe(200);
     expect(body.data.items).toHaveLength(1);
+    expect(typeof body.meta.response_time_ms).toBe("number");
     expect(listEmployeeDocumentsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId: SESSION_TENANT_ID,
         periodRef: "2026-03",
         documentType: "holerite",
       }),
+    );
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "playtest.employee.docs.view", status: "success" })
     );
   });
 
@@ -131,6 +143,9 @@ describe("employee documents api", () => {
 
     expect(response.status).toBe(403);
     expect(body.error.code).toBe("FORBIDDEN");
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "playtest.employee.docs.friction", status: "failure", details: expect.objectContaining({ cause: "forbidden" }) })
+    );
   });
 
   it("rejects invalid period filter", async () => {
@@ -146,5 +161,27 @@ describe("employee documents api", () => {
 
     expect(response.status).toBe(400);
     expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("logs playtest friction on internal server error (500)", async () => {
+    listEmployeeDocumentsMock.mockRejectedValue(new Error("Storage unavailable"));
+
+    const request = new NextRequest(
+      `http://localhost/api/v1/employee/documents?tenant_id=${SESSION_TENANT_ID}`,
+      {
+        headers: { cookie: "session_id=token" },
+      },
+    );
+
+    const response = await GET(request);
+    
+    expect(response.status).toBe(500);
+    expect(writePlaytestEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ 
+        action: "playtest.employee.docs.friction", 
+        status: "failure", 
+        details: expect.objectContaining({ cause: "internal_error", error: "Storage unavailable" }) 
+      })
+    );
   });
 });

@@ -8,6 +8,7 @@ import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { auditLogs, userTenantMappings } from "@/lib/db/schema";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
 import {
   getOperationalAlerts,
   OperationalAlertsError,
@@ -77,11 +78,31 @@ async function writeAlertsReadAudit(params: {
   });
 }
 
+async function recordPlaytestEvent(params: Parameters<typeof writePlaytestEvent>[0]) {
+  try {
+    await writePlaytestEvent(params);
+  } catch (error) {
+    console.error("[playtest.rh.alerts] Falha ao registrar evento", error);
+  }
+}
+
+function playtestDetails(role: RbacRole | undefined, details: Record<string, unknown>) {
+  return role ? { actor_role: role, ...details } : details;
+}
+
 export async function GET(request: NextRequest) {
   const correlationId = resolveCorrelationId(request.headers.get(CORRELATION_ID_HEADER));
   const parsedQuery = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
 
   if (!parsedQuery.success) {
+    await recordPlaytestEvent({
+      tenantId: request.cookies.get(SESSION_COOKIE_NAME)?.value ? "unknown" : "anonymous",
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: { cause: "validation_error", issues: parsedQuery.error.issues },
+    });
     return jsonResponse(
       errorResponse("VALIDATION_ERROR", "Parametros de consulta invalidos.", correlationId, {
         issues: parsedQuery.error.issues,
@@ -93,6 +114,14 @@ export async function GET(request: NextRequest) {
 
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionToken) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao ausente" },
+    });
     return jsonResponse(errorResponse("UNAUTHORIZED", "Sessao ausente.", correlationId), correlationId, {
       status: 401,
     });
@@ -100,6 +129,14 @@ export async function GET(request: NextRequest) {
 
   const session = await validateSession(sessionToken);
   if (!session) {
+    await recordPlaytestEvent({
+      tenantId: "anonymous",
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: { cause: "unauthorized", reason: "Sessao invalida ou expirada" },
+    });
     return jsonResponse(
       errorResponse("UNAUTHORIZED", "Sessao invalida ou expirada.", correlationId),
       correlationId,
@@ -109,6 +146,15 @@ export async function GET(request: NextRequest) {
 
   const role = await resolveTenantRole(session.userId, session.tenantId);
   if (!role) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: { cause: "forbidden", reason: "Usuario sem permissao no tenant" },
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Usuario sem permissao no tenant.", correlationId),
       correlationId,
@@ -124,6 +170,15 @@ export async function GET(request: NextRequest) {
       action: RBAC_ACTIONS.tenantRead,
     });
   } catch (error) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: playtestDetails(role, { cause: "forbidden", reason: "Acesso negado pelo RBAC" }),
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Acesso negado pelo RBAC.", correlationId, {
         cause: (error as Error).message,
@@ -135,6 +190,20 @@ export async function GET(request: NextRequest) {
 
   const allowedRoles: RbacRole[] = ["admin_plataforma"];
   if (!allowedRoles.includes(role)) {
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: role === "rh_gestor" ? "playtest.rh.boundary.gestor.blocked" : "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      resourceId: "/api/v1/rh/alerts",
+      status: role === "rh_gestor" ? "success" : "failure",
+      details: playtestDetails(role, {
+        cause: "forbidden",
+        reason: "Perfil sem permissao para consultar alertas operacionais",
+        resource_path: "/api/v1/rh/alerts",
+      }),
+    });
     return jsonResponse(
       errorResponse("FORBIDDEN", "Perfil sem permissao para consultar alertas operacionais.", correlationId),
       correlationId,
@@ -153,6 +222,20 @@ export async function GET(request: NextRequest) {
     });
 
     try {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.alerts.view",
+        resourceType: "alerts",
+        status: "success",
+        details: playtestDetails(role, {
+          total: result.metadata.total,
+          open_count: result.metadata.open_count,
+          in_treatment_count: result.metadata.in_treatment_count,
+          resolved_count: result.metadata.resolved_count,
+        }),
+      });
       await writeAlertsReadAudit({
         tenantId: session.tenantId,
         actorId: session.userId,
@@ -172,6 +255,15 @@ export async function GET(request: NextRequest) {
     return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
   } catch (error) {
     if (error instanceof OperationalAlertsError) {
+      await recordPlaytestEvent({
+        tenantId: session.tenantId,
+        actorId: session.userId,
+        correlationId,
+        action: "playtest.rh.alerts.friction",
+        resourceType: "alerts",
+        status: "failure",
+        details: playtestDetails(role, { cause: "domain_error", code: error.code }),
+      });
       return jsonResponse(
         errorResponse(error.code, error.message, correlationId, error.details),
         correlationId,
@@ -179,6 +271,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    await recordPlaytestEvent({
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      correlationId,
+      action: "playtest.rh.alerts.friction",
+      resourceType: "alerts",
+      status: "failure",
+      details: playtestDetails(role, { cause: "internal_error", error: (error as Error).message }),
+    });
     return jsonResponse(
       errorResponse("INTERNAL_SERVER_ERROR", "Falha ao consultar alertas operacionais.", correlationId),
       correlationId,

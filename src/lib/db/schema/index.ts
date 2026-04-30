@@ -8,6 +8,7 @@ export * from "./compliance-evidence";
 export * from "./employee-documents";
 export * from "./document-contestations";
 export * from "./employee-notifications";
+export * from "./employee-identities";
 export * from "./batches";
 export * from "./exceptions";
 export * from "./exception-actions";
@@ -15,4 +16,6 @@ export * from "./external-ingestions";
 export * from "./external-identifier-mappings";
 export * from "./external-event-consumers";
 export * from "./external-event-deliveries";
+export * from "./plans/telemetry";
+
 

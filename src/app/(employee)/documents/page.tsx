@@ -1,29 +1,20 @@
-import Link from "next/link";
-import {
-  Alert,
-  Button,
-  Container,
-  MenuItem,
-  Paper,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
 import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
-import { type EmployeeDocumentListItem, listEmployeeDocuments } from "@/lib/documents/list-documents";
-import { DocumentStatusChip } from "@/lib/documents/document-status-chip";
-import type { DocumentStatus } from "@/lib/documents/status-mapping";
+import {
+  listEmployeeDocuments,
+  type EmployeeDocumentListItem,
+} from "@/lib/documents/list-documents";
+import { EmployeeDocumentsPageView } from "./DocumentsList";
 
-type Filters = {
-  tenantId?: string;
-  periodRef?: string;
-  documentType?: string;
-};
+export {
+  EmployeeDocumentsPageView,
+  getContestationGuidanceByStatus,
+  serializeDocumentFilters,
+} from "./DocumentsList";
 
 type SearchParams = {
   period_ref?: string;
@@ -35,247 +26,6 @@ type PageProps = {
 };
 
 export const dynamic = "force-dynamic";
-
-export function serializeDocumentFilters(filters: {
-  periodRef?: string;
-  documentType?: string;
-}) {
-  const params = new URLSearchParams();
-
-  if (filters.periodRef) {
-    params.set("period_ref", filters.periodRef);
-  }
-
-  if (filters.documentType) {
-    params.set("document_type", filters.documentType);
-  }
-
-  return params.toString();
-}
-
-export function getContestationGuidanceByStatus(status: DocumentStatus) {
-  switch (status) {
-    case "pending":
-      return "Documento em processamento. Se o prazo esperado ja passou, abra contestacao para o RH verificar a publicacao.";
-    case "unavailable":
-      return "Documento indisponivel no momento. Abra contestacao para o RH validar o lote e liberar o item correto.";
-    case "error":
-      return "houve falha operacional identificada. Abra contestacao para rastreio e tratativa prioritaria pelo RH.";
-    default:
-      return "";
-  }
-}
-
-function canOpenContestation(status: DocumentStatus) {
-  return status === "pending" || status === "unavailable" || status === "error";
-}
-
-function buildDetailsHref(documentId: string, documentStatus: DocumentStatus, filters: Filters) {
-  const from = serializeDocumentFilters({
-    periodRef: filters.periodRef,
-    documentType: filters.documentType,
-  });
-
-  const params = new URLSearchParams({
-    status: documentStatus,
-  });
-
-  if (!from) {
-    return `/documents/${documentId}?${params.toString()}`;
-  }
-
-  params.set("from", from);
-
-  return `/documents/${documentId}?${params.toString()}`;
-}
-
-function buildDownloadHref(documentId: string) {
-  return `/api/v1/employee/documents/${documentId}/download?disposition=attachment`;
-}
-
-function buildContestationHref(
-  item: EmployeeDocumentListItem,
-  filters: Filters,
-) {
-  const params = new URLSearchParams({
-    document_id: item.document_id,
-    period_ref: item.period_ref,
-    document_type: item.document_type,
-    status: item.status,
-  });
-
-  const from = serializeDocumentFilters({
-    periodRef: filters.periodRef,
-    documentType: filters.documentType,
-  });
-
-  if (from) {
-    params.set("from", from);
-  }
-
-  return `/documents/contestacao?${params.toString()}`;
-}
-
-export function EmployeeDocumentsPageView({
-  items,
-  activeFilters,
-  errorMessage,
-}: {
-  items: EmployeeDocumentListItem[];
-  activeFilters: { periodRef?: string; documentType?: string };
-  errorMessage?: string;
-}) {
-  const currentQuery = serializeDocumentFilters(activeFilters);
-  const clearHref = "/documents";
-
-  return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={3}>
-          <Typography variant="h2">Meus Documentos</Typography>
-
-          <Button component={Link} href="/notifications" variant="outlined">
-            Historico de notificacoes
-          </Button>
-
-          <Stack
-            component="form"
-            direction={{ xs: "column", md: "row" }}
-            spacing={2}
-            method="get"
-            role="search"
-            aria-label="Filtros de documentos"
-          >
-            <TextField
-              name="period_ref"
-              label="Periodo (AAAA-MM)"
-              defaultValue={activeFilters.periodRef ?? ""}
-              slotProps={{
-                htmlInput: {
-                  pattern: "\\d{4}-(0[1-9]|1[0-2])",
-                  "aria-label": "Filtrar por periodo",
-                },
-              }}
-            />
-
-            <TextField
-              select
-              name="document_type"
-              label="Tipo de documento"
-              defaultValue={activeFilters.documentType ?? ""}
-              slotProps={{
-                htmlInput: { "aria-label": "Filtrar por tipo de documento" },
-              }}
-              sx={{ minWidth: 220 }}
-            >
-              <MenuItem value="">Todos</MenuItem>
-              <MenuItem value="holerite">Holerite</MenuItem>
-              <MenuItem value="cartao_ponto">Cartao de ponto</MenuItem>
-            </TextField>
-
-            <Button type="submit" variant="contained">
-              Aplicar filtros
-            </Button>
-
-            <Button component={Link} href={clearHref} variant="outlined">
-              Limpar
-            </Button>
-          </Stack>
-
-          {errorMessage ? (
-            <Alert severity="error" role="alert">
-              {errorMessage}
-            </Alert>
-          ) : null}
-
-          <Alert severity="info" role="status">
-            Se o download falhar, aguarde alguns instantes e tente novamente. Caso o documento ainda nao esteja publicado, abra uma contestacao contextual para o RH.
-          </Alert>
-
-          {!errorMessage && items.length === 0 ? (
-            <Alert severity="info" role="status">
-              Nenhum documento encontrado para os filtros informados.
-            </Alert>
-          ) : null}
-
-          {!errorMessage && items.length > 0 ? (
-            <Stack spacing={2} aria-live="polite">
-              {items.map((item) => (
-                <Paper
-                  key={item.document_id}
-                  variant="outlined"
-                  sx={{ p: 2, borderRadius: 2 }}
-                >
-                  <Stack
-                    direction={{ xs: "column", md: "row" }}
-                    spacing={2}
-                    sx={{
-                      display: "flex",
-                      alignItems: { xs: "flex-start", md: "center" },
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <Stack spacing={0.5}>
-                      <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                        {item.document_type}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Periodo: {item.period_ref}
-                      </Typography>
-                    </Stack>
-
-                    <DocumentStatusChip status={item.status as DocumentStatus} />
-
-                    {canOpenContestation(item.status as DocumentStatus) ? (
-                      <Typography variant="body2" color="text.secondary">
-                        {getContestationGuidanceByStatus(item.status as DocumentStatus)}
-                      </Typography>
-                    ) : null}
-
-                    <Button
-                      component={Link}
-                      href={buildDownloadHref(item.document_id)}
-                      variant="contained"
-                      aria-label={`Baixar ${item.document_type} ${item.period_ref}`}
-                    >
-                      Baixar
-                    </Button>
-
-                    <Button
-                      component={Link}
-                      href={buildDetailsHref(item.document_id, item.status, activeFilters)}
-                      variant="outlined"
-                    >
-                      Ver detalhes
-                    </Button>
-
-                    {canOpenContestation(item.status as DocumentStatus) ? (
-                      <Button
-                        component={Link}
-                        href={buildContestationHref(item, activeFilters)}
-                        variant="outlined"
-                        color="warning"
-                        aria-label={`Abrir contestacao para ${item.document_type} ${item.period_ref}`}
-                      >
-                        Abrir contestacao
-                      </Button>
-                    ) : null}
-                  </Stack>
-                </Paper>
-              ))}
-            </Stack>
-          ) : null}
-
-          {currentQuery ? (
-            <Typography variant="body2" color="text.secondary">
-              Filtros ativos: {currentQuery}
-            </Typography>
-          ) : null}
-        </Stack>
-      </Paper>
-    </Container>
-  );
-}
 
 async function resolveRole(userId: string, tenantId: string) {
   const mappings = await db
@@ -305,7 +55,7 @@ export default async function EmployeeDocumentsPage({ searchParams }: PageProps)
       <EmployeeDocumentsPageView
         items={[]}
         activeFilters={{ periodRef, documentType }}
-        errorMessage="Sessao ausente. Realize login para consultar seus documentos."
+        errorMessage="Sessão ausente. Realize login para consultar seus documentos."
       />
     );
   }
@@ -316,12 +66,13 @@ export default async function EmployeeDocumentsPage({ searchParams }: PageProps)
       <EmployeeDocumentsPageView
         items={[]}
         activeFilters={{ periodRef, documentType }}
-        errorMessage="Sessao invalida ou expirada. Realize login novamente."
+        errorMessage="Sessão inválida ou expirada. Realize login novamente."
       />
     );
   }
 
   const role = await resolveRole(session.userId, session.tenantId);
+
   if (role !== "colaborador") {
     return (
       <EmployeeDocumentsPageView

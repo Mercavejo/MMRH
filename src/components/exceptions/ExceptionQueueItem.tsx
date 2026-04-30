@@ -71,7 +71,7 @@ export function ExceptionQueueItem(props: {
               {props.item.batch_name}
             </Typography>
             <Typography variant="body2">
-              Colaborador previsto: {props.item.associated_employee_external_id ?? "Nao informado"}
+              Colaborador previsto: {props.item.assoc_employee_external_id ?? "Nao informado"}
             </Typography>
           </Stack>
 

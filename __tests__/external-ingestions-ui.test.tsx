@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { IntegrationStatusPanel } from "@/components/integrations/integration-status-panel";
-import { RhIntegrationsView } from "@/app/(rh)/integracoes/page";
+import { RhIntegrationsView } from "@/app/rh/integracoes/page";
 
 describe("external ingestions ui", () => {
   it("renders status panel metrics and item details", () => {

@@ -140,7 +140,7 @@ export async function listExceptionsForBatch(input: {
     .offset(input.skip);
 
   const metadataRows = await db
-    .select({ currentState: exceptions.currentState })
+    .select({ current_state: exceptions.currentState })
     .from(exceptions)
     .where(and(eq(exceptions.batchId, input.batchId), eq(exceptions.tenantId, input.tenantId)));
 
