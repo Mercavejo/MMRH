@@ -267,7 +267,7 @@ export function RhEmployeesManager({
                       <Button size="small" onClick={() => loadEmployee(item)}>
                         Editar
                       </Button>
-                      <Button size="small" color="error" onClick={() => handleDelete(item)} disabled={!!item.user_id}>
+                      <Button size="small" color="error" onClick={() => handleDelete(item)} disabled={item.status === "active"}>
                         Remover
                       </Button>
                     </Stack>
@@ -293,7 +293,7 @@ export function RhEmployeesManager({
         <DialogContent>
           <DialogContentText>
             Deseja realmente remover o colaborador <strong>{deletingEmployee?.employee_name}</strong>?
-            Esta acao nao pode ser desfeita. Colaboradores ja ativados nao podem ser removidos.
+            Esta acao nao pode ser desfeita. Apenas colaboradores com status ativo nao podem ser removidos.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

@@ -341,11 +341,11 @@ export async function deleteEmployeeIdentityRecord(
     );
   }
 
-  if (existing.userId) {
+  if (existing.userId && existing.status === "active") {
     throw new EmployeeIdentityRepositoryError(
       "ALREADY_ACTIVATED",
-      "Colaborador ja ativado nao pode ser removido. Desative o status primeiro.",
-      { employee_identity_id: input.employeeId, user_id: existing.userId },
+      "Colaborador ativo nao pode ser removido. Altere o status para inativo ou bloqueado primeiro.",
+      { employee_identity_id: input.employeeId, user_id: existing.userId, status: existing.status },
     );
   }
 
