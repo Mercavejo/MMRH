@@ -16,6 +16,10 @@ import {
   DownloadEligibilityError,
   getDownloadableDocument,
 } from "@/lib/documents/get-downloadable-document";
+import {
+  DocumentStorageError,
+  readDocumentArtifact,
+} from "@/lib/documents/storage";
 import { writeDocumentDownloadAudit } from "@/lib/documents/download-audit";
 import {
   CORRELATION_ID_HEADER,
@@ -25,6 +29,7 @@ import {
 type HandlerDependencies = {
   validateSessionFn?: typeof validateSession;
   getDownloadableDocumentFn?: typeof getDownloadableDocument;
+  readDocumentArtifactFn?: typeof readDocumentArtifact;
   assertTenantActionFn?: typeof assertTenantAction;
   resolveCorrelationIdFn?: typeof resolveCorrelationId;
   resolveRoleFn?: (params: {
@@ -87,21 +92,6 @@ function isValidSignature(expected: string, provided: string): boolean {
   return timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
-function buildSignedDownloadBody(document: {
-  document_id: string;
-  document_type: string;
-  period_ref: string;
-  file_name: string;
-}) {
-  return [
-    "Download placeholder",
-    `document_id=${document.document_id}`,
-    `document_type=${document.document_type}`,
-    `period_ref=${document.period_ref}`,
-    `file_name=${document.file_name}`,
-  ].join("\n");
-}
-
 export async function handleEmployeeDocumentDownload(
   request: NextRequest,
   paramsInput: { documentId: string },
@@ -111,6 +101,8 @@ export async function handleEmployeeDocumentDownload(
   const validateSessionFn = deps.validateSessionFn ?? validateSession;
   const getDownloadableDocumentFn =
     deps.getDownloadableDocumentFn ?? getDownloadableDocument;
+  const readDocumentArtifactFn =
+    deps.readDocumentArtifactFn ?? readDocumentArtifact;
   const assertTenantActionFn = deps.assertTenantActionFn ?? assertTenantAction;
   const writeDocumentDownloadAuditFn =
     deps.writeDocumentDownloadAuditFn ?? writeDocumentDownloadAudit;
@@ -292,15 +284,77 @@ export async function handleEmployeeDocumentDownload(
         );
       }
 
-      return new NextResponse(buildSignedDownloadBody(document), {
-        status: 200,
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-          "cache-control": "no-store",
-          "content-disposition": `${disposition}; filename="${document.file_name}"`,
-          [CORRELATION_ID_HEADER]: correlationId,
-        },
-      });
+      try {
+        const fileBuffer = await readDocumentArtifactFn(document.storage_key);
+
+        try {
+          await writeDocumentDownloadAuditFn({
+            tenantId,
+            actorId: session.userId,
+            documentId: document.document_id,
+            status: "success",
+            correlationId,
+            ipAddress: request.headers.get("x-forwarded-for") ?? undefined,
+            details: {
+              document_type: document.document_type,
+              period_ref: document.period_ref,
+              disposition,
+              expires_at: new Date(queryParsed.data.exp * 1000).toISOString(),
+            },
+          });
+        } catch {
+          return NextResponse.json(
+            errorResponse(
+              "AUDIT_LOG_WRITE_FAILED",
+              "Nao foi possivel concluir o registro de auditoria do download.",
+              correlationId,
+              {
+                action: "employee.document.download.v1",
+                document_id: document.document_id,
+              },
+              tenantId,
+            ),
+            { status: 503 },
+          );
+        }
+
+        return new NextResponse(new Uint8Array(fileBuffer), {
+          status: 200,
+          headers: {
+            "content-type": document.mime_type,
+            "content-length": String(fileBuffer.byteLength),
+            "cache-control": "no-store",
+            "content-disposition": `${disposition}; filename="${document.file_name}"`,
+            [CORRELATION_ID_HEADER]: correlationId,
+          },
+        });
+      } catch (error) {
+        if (error instanceof DocumentStorageError) {
+          await writeDocumentDownloadAuditFn({
+            tenantId,
+            actorId: session.userId,
+            documentId: document.document_id,
+            status: "failure",
+            correlationId,
+            ipAddress: request.headers.get("x-forwarded-for") ?? undefined,
+            details: {
+              reason: "DOCUMENT_ARTIFACT_UNAVAILABLE",
+              storage_error_code: error.code,
+            },
+          }).catch(() => undefined);
+
+          return NextResponse.json(
+            errorResponse(
+              "DOWNLOAD_UNAVAILABLE",
+              "Artefato do documento indisponivel para download no momento.",
+              correlationId,
+            ),
+            { status: 503 },
+          );
+        }
+
+        throw error;
+      }
     }
 
     const expiresInSeconds = 300;
@@ -332,37 +386,6 @@ export async function handleEmployeeDocumentDownload(
     downloadUrl.searchParams.set("exp", String(exp));
     downloadUrl.searchParams.set("sig", sig);
     downloadUrl.searchParams.set("disposition", disposition);
-
-    try {
-      await writeDocumentDownloadAuditFn({
-        tenantId,
-        actorId: session.userId,
-        documentId: document.document_id,
-        status: "success",
-        correlationId,
-        ipAddress: request.headers.get("x-forwarded-for") ?? undefined,
-        details: {
-          document_type: document.document_type,
-          period_ref: document.period_ref,
-          disposition,
-          expires_at: new Date(exp * 1000).toISOString(),
-        },
-      });
-    } catch {
-      return NextResponse.json(
-        errorResponse(
-          "AUDIT_LOG_WRITE_FAILED",
-          "Nao foi possivel concluir o registro de auditoria do download.",
-          correlationId,
-          {
-            action: "employee.document.download.v1",
-            document_id: document.document_id,
-          },
-          tenantId,
-        ),
-        { status: 503 },
-      );
-    }
 
     if (responseMode === "json") {
       return NextResponse.json(
@@ -435,6 +458,32 @@ export async function handleEmployeeDocumentDownload(
           correlationId,
         ),
         { status: 409 },
+      );
+    }
+
+    if (
+      error instanceof DownloadEligibilityError &&
+      error.code === "DOCUMENT_ARTIFACT_UNAVAILABLE"
+    ) {
+      await writeDocumentDownloadAuditFn({
+        tenantId,
+        actorId: session.userId,
+        documentId: paramsParsed.data.documentId,
+        status: "failure",
+        correlationId,
+        ipAddress: request.headers.get("x-forwarded-for") ?? undefined,
+        details: {
+          reason: "DOCUMENT_ARTIFACT_UNAVAILABLE",
+        },
+      }).catch(() => undefined);
+
+      return NextResponse.json(
+        errorResponse(
+          "DOWNLOAD_UNAVAILABLE",
+          "Artefato do documento indisponivel para download no momento.",
+          correlationId,
+        ),
+        { status: 503 },
       );
     }
 
