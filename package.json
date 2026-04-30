@@ -12,8 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "dev:seed-playtesting": "npx tsx drizzle/scripts/seed-playtesting.ts",
-    "dev:reset-playtesting": "npx tsx drizzle/scripts/reset-playtesting.ts",
-    "vercel-build": "npx drizzle-kit migrate && next build"
+    "dev:reset-playtesting": "npx tsx drizzle/scripts/reset-playtesting.ts"
   },
   "dependencies": {
     "@emotion/cache": "^11.14.0",

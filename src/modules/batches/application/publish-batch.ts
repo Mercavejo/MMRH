@@ -215,6 +215,7 @@ export async function publishBatch(input: {
           sourceStorageKey: snapshot.sourceStorageKey,
           sourceStorageFilename: snapshot.sourceStorageFilename,
           sourceStorageMimeType: snapshot.sourceStorageMimeType,
+          sourceContentBase64: snapshot.sourceContentBase64,
           routingManifest: snapshot.routingManifest,
         },
         transaction,

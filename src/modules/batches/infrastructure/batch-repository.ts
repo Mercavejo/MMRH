@@ -13,6 +13,7 @@ export type BatchPublicationSnapshot = {
   sourceStorageKey: string | null;
   sourceStorageFilename: string | null;
   sourceStorageMimeType: string | null;
+  sourceContentBase64: string | null;
   routingManifest: BatchRoutingManifestItem[];
   routingTotalCount: number;
   routingMatchedCount: number;
@@ -43,6 +44,7 @@ export async function loadBatchPublicationSnapshot(
       sourceStorageKey: batches.sourceStorageKey,
       sourceStorageFilename: batches.sourceStorageFilename,
       sourceStorageMimeType: batches.sourceStorageMimeType,
+      sourceContentBase64: batches.sourceContentBase64,
       routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
@@ -118,6 +120,7 @@ export async function markBatchPublicationStarting(
       sourceStorageKey: batches.sourceStorageKey,
       sourceStorageFilename: batches.sourceStorageFilename,
       sourceStorageMimeType: batches.sourceStorageMimeType,
+      sourceContentBase64: batches.sourceContentBase64,
       routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,
@@ -201,6 +204,7 @@ export async function loadLatestBatch(
       sourceStorageKey: batches.sourceStorageKey,
       sourceStorageFilename: batches.sourceStorageFilename,
       sourceStorageMimeType: batches.sourceStorageMimeType,
+      sourceContentBase64: batches.sourceContentBase64,
       routingManifest: batches.routingManifest,
       routingTotalCount: batches.routingTotalCount,
       routingMatchedCount: batches.routingMatchedCount,

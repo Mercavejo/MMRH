@@ -1,0 +1,1 @@
+ALTER TABLE "batches" ADD COLUMN "source_content_base64" text;

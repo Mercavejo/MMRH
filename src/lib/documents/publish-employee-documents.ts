@@ -119,6 +119,7 @@ export async function publishEmployeeDocumentsForBatch(
     sourceStorageKey: string | null;
     sourceStorageFilename: string | null;
     sourceStorageMimeType: string | null;
+    sourceContentBase64: string | null;
     routingManifest: BatchRoutingManifestItem[];
   },
   dbClient: DbLike = db,
@@ -139,7 +140,10 @@ export async function publishEmployeeDocumentsForBatch(
     new Set(matchedItems.map((item) => extractMatchedReferenceCode(item))),
   );
   const targets = await loadPublicationTargets(input.tenantId, referenceCodes, dbClient);
-  const sourcePdfBuffer = await readDocumentArtifact(input.sourceStorageKey).catch((error) => {
+  const sourcePdfBuffer = await readDocumentArtifact(input.sourceStorageKey).catch(async (error) => {
+    if (input.sourceContentBase64) {
+      return Buffer.from(input.sourceContentBase64, "base64");
+    }
     if (error instanceof Error) {
       throw new EmployeeDocumentPublicationError(
         "PUBLICATION_SOURCE_ARTIFACT_MISSING",

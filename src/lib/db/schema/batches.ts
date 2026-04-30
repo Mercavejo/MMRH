@@ -48,6 +48,7 @@ export const batches = pgTable("batches", {
   sourceStorageKey: text("source_storage_key"),
   sourceStorageFilename: text("source_storage_filename"),
   sourceStorageMimeType: text("source_storage_mime_type"),
+  sourceContentBase64: text("source_content_base64"),
   sourceFormat: batchSourceFormatEnum("source_format").notNull(),
   organizationalUnit: text("organizational_unit"),
   validationStatus: batchValidationStatusEnum("validation_status").notNull(),

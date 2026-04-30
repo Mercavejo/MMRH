@@ -85,6 +85,7 @@ export async function persistValidatedBatchImport(params: {
         sourceStorageKey,
         sourceStorageFilename: params.validation.original_filename,
         sourceStorageMimeType: params.validation.mime_type,
+        sourceContentBase64: params.sourceFileBuffer.toString("base64"),
         sourceFormat: params.validation.summary.source_format,
         organizationalUnit: resolveOrganizationalUnit(
           params.validation.summary as unknown as Record<string, unknown>,
