@@ -94,6 +94,7 @@ async function loadEmployeesPageState() {
       canManage: false,
       errorMessage: "Falha ao carregar colaboradores funcionais. Tente novamente em instantes.",
       items: [] as EmployeeIdentityListItem[],
+      tenantId: null,
     };
   }
 }
