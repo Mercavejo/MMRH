@@ -24,6 +24,7 @@ type DbLike = {
             storageKey: string | null;
             fileName: string | null;
             mimeType: string | null;
+            contentBase64: string | null;
           }>
         >;
       };
