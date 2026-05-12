@@ -22,6 +22,7 @@ import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
 } from "@/lib/observability/correlation-id";
+import { ADMIN_LABEL_INLINE } from "@/lib/brand";
 
 const paramsSchema = z.object({
   batchId: z.string().uuid(),
@@ -145,7 +146,7 @@ export async function POST(
     return jsonResponse(
       errorResponse(
         "FORBIDDEN",
-        "Somente operador, gestor cliente ou admin Mercavejo pode executar o roteamento do lote.",
+        `Somente operador, gestor cliente ou ${ADMIN_LABEL_INLINE} pode executar o roteamento do lote.`,
         correlationId,
       ),
       correlationId,

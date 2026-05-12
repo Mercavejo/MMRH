@@ -6,6 +6,7 @@ import {
   EmployeeDocumentPublicationError,
   publishEmployeeDocumentsForBatch,
 } from "@/lib/documents/publish-employee-documents";
+import { employeeDocuments } from "@/lib/db/schema";
 import { writeDocumentArtifact } from "@/lib/documents/storage";
 
 const extractPagesMock = vi.fn(async ([pageInfo]: Array<{ includePages?: number[] }>) =>
@@ -105,6 +106,11 @@ describe("publish employee documents", () => {
     );
 
     const insertedDocument = valuesMock.mock.calls[0][0][0];
+    expect(insertedDocument.contentBase64).toBe(
+      Buffer.from("%PDF-page-1%").toString("base64"),
+    );
+    expect(employeeDocuments).toHaveProperty("contentBase64");
+
     const artifactBytes = await readFile(path.join(tempRoot, insertedDocument.storageKey));
     expect(artifactBytes.toString()).toContain("%PDF-page-1%");
   });
@@ -158,7 +164,96 @@ describe("publish employee documents", () => {
       ),
     ).rejects.toMatchObject<EmployeeDocumentPublicationError>({
       code: "PUBLICATION_TARGET_NOT_FOUND",
+      details: {
+        blocked_count: 1,
+        missing_reference_codes: ["REF-001"],
+        publish_blockers: [
+          expect.objectContaining({
+            document_id: "doc-1",
+            reference_code: "REF-001",
+            reason: "identity_not_found",
+          }),
+        ],
+      },
     });
+  });
+
+  it("publishes only eligible items when partial publish is explicitly allowed", async () => {
+    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    const sourceStorageKey = path.join(
+      "tenants",
+      "11111111-1111-4111-8111-111111111111",
+      "batches",
+      "batch-1",
+      "source",
+      "source.pdf",
+    );
+
+    await writeDocumentArtifact({
+      storageKey: sourceStorageKey,
+      content: Buffer.from("%PDF-source%"),
+    });
+
+    const dbClient = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              id: "emp-1",
+              referenceCode: "REF-001",
+              status: "active",
+              userId: "user-1",
+            },
+          ]),
+        }),
+      }),
+      insert: vi.fn().mockReturnValue({
+        values: valuesMock,
+      }),
+    } as never;
+
+    const result = await publishEmployeeDocumentsForBatch(
+      {
+        tenantId: "11111111-1111-4111-8111-111111111111",
+        batchId: "batch-1",
+        sourceStorageKey,
+        sourceStorageFilename: "lote-real.pdf",
+        sourceStorageMimeType: "application/pdf",
+        skipMissingTargets: true,
+        routingManifest: [
+          {
+            document_id: "doc-1",
+            employee_identifier: "REF-001",
+            codigo_colaborador: "REF-001",
+            nome_normalizado: null,
+            match_strategy: "codigo_colaborador",
+            document_type: "holerite",
+            period_ref: "2026-03",
+            page_index: 1,
+          },
+          {
+            document_id: "doc-2",
+            employee_identifier: "REF-999",
+            codigo_colaborador: "REF-999",
+            nome_normalizado: null,
+            match_strategy: "codigo_colaborador",
+            document_type: "holerite",
+            period_ref: "2026-03",
+            page_index: 2,
+          },
+        ],
+      },
+      dbClient,
+    );
+
+    expect(result).toEqual({
+      publishedCount: 1,
+      skippedCount: 1,
+      skippedReferenceCodes: ["REF-999"],
+    });
+    expect(valuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({ userId: "user-1", sourcePageIndex: 1 }),
+    ]);
   });
 
   it("blocks publication when routed item has no resolvable page index", async () => {

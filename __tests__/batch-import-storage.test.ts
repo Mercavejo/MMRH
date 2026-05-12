@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { batches } from "@/lib/db/schema";
 import { persistValidatedBatchImport } from "@/lib/rh/batches/import-batch";
 
 describe("persistValidatedBatchImport", () => {
@@ -76,6 +77,8 @@ describe("persistValidatedBatchImport", () => {
     );
     expect(batchInsert.sourceStorageFilename).toBe("lote-real.pdf");
     expect(batchInsert.sourceStorageMimeType).toBe("application/pdf");
+    expect(batchInsert.sourceContentBase64).toBe(sourceFileBuffer.toString("base64"));
+    expect(batches).toHaveProperty("sourceContentBase64");
 
     const storedBuffer = await readFile(path.join(tempRoot, batchInsert.sourceStorageKey));
     expect(storedBuffer.equals(sourceFileBuffer)).toBe(true);

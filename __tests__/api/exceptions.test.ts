@@ -366,6 +366,6 @@ describe("exception api", () => {
     const body = await response.json();
 
     expect(response.status).toBe(403);
-    expect(body.error.message).toBe("Somente admin Mercavejo pode consultar excecoes.");
+    expect(body.error.message).toBe("Somente admin MMRH pode consultar excecoes.");
   });
 });

@@ -19,6 +19,7 @@ import {
   BatchPublicationError,
   publishBatch,
 } from "@/modules/batches/application/publish-batch";
+import { ADMIN_LABEL_INLINE } from "@/lib/brand";
 
 const paramsSchema = z.object({
   batchId: z.string().uuid(),
@@ -26,6 +27,7 @@ const paramsSchema = z.object({
 
 const payloadSchema = z.object({
   idempotency_key: z.string().trim().min(8).max(128),
+  skip_missing_targets: z.boolean().optional().default(false),
 });
 
 function withCorrelationHeader(response: NextResponse, correlationId: string) {
@@ -125,7 +127,7 @@ export async function POST(
 
   if (!["rh_operator", "rh_gestor", "admin_plataforma"].includes(role)) {
     return jsonResponse(
-      errorResponse("FORBIDDEN", "Somente operador, gestor cliente ou admin Mercavejo pode publicar lote.", correlationId),
+      errorResponse("FORBIDDEN", `Somente operador, gestor cliente ou ${ADMIN_LABEL_INLINE} pode publicar lote.`, correlationId),
       correlationId,
       { status: 403 },
     );
@@ -138,6 +140,7 @@ export async function POST(
       actorId: session.userId,
       correlationId,
       idempotencyKey: bodyParsed.data.idempotency_key,
+      skipMissingTargets: bodyParsed.data.skip_missing_targets,
     });
 
     return jsonResponse(successResponse(result, correlationId, session.tenantId), correlationId);
@@ -150,8 +153,26 @@ export async function POST(
       );
     }
 
+    console.error("[rh.batches.publish] Falha inesperada ao publicar lote", {
+      tenantId: session.tenantId,
+      actorId: session.userId,
+      batchId: paramsParsed.data.batchId,
+      correlationId,
+      error,
+    });
+
     return jsonResponse(
-      errorResponse("INTERNAL_SERVER_ERROR", "Falha ao publicar lote.", correlationId),
+      errorResponse(
+        "INTERNAL_SERVER_ERROR",
+        "Falha ao publicar lote.",
+        correlationId,
+        process.env.VERCEL_ENV === "preview"
+          ? {
+              debug_message:
+                error instanceof Error ? error.message : "unknown_error",
+            }
+          : undefined,
+      ),
       correlationId,
       { status: 500 },
     );

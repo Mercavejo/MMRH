@@ -14,13 +14,27 @@ import {
   activateEmployeeAccess,
   EmployeeActivationError,
 } from "@/modules/employee-identity/application/activate-employee-access";
+import { admissionDateInputPattern } from "@/modules/employee-identity/domain/employee-identity";
+import { isValidCpfFormat, normalizeCpf } from "@/lib/validation/cpf";
 
 const activationSchema = z.object({
   tenant_id: z.string().uuid(),
   reference_code: z.string().trim().min(1),
-  admission_date: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-\d{2}$/),
-  email: z.string().email(),
+  admission_date: z.string().regex(admissionDateInputPattern),
+  cpf: z.string().trim().refine(isValidCpfFormat, {
+    message: "CPF invalido. Informe 11 digitos com ou sem pontuacao.",
+  }),
+  cpf_confirmation: z.string().trim().min(1),
+  email: z.union([z.string().trim().email(), z.literal("")]).optional(),
   password: z.string().min(8),
+}).superRefine((value, context) => {
+  if (normalizeCpf(value.cpf) !== normalizeCpf(value.cpf_confirmation)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["cpf_confirmation"],
+      message: "A confirmacao do CPF deve ser identica ao CPF informado.",
+    });
+  }
 });
 
 function jsonWithCorrelationHeader(body: unknown, status: number, correlationId: string) {
@@ -58,6 +72,7 @@ export async function POST(request: NextRequest) {
       tenantId: parsed.data.tenant_id,
       referenceCode: parsed.data.reference_code,
       admissionDate: parsed.data.admission_date,
+      cpf: parsed.data.cpf,
       email: parsed.data.email,
       password: parsed.data.password,
       correlationId,
@@ -112,6 +127,8 @@ export async function POST(request: NextRequest) {
           ? 403
           : error.code === "ACTIVATION_UNAVAILABLE"
             ? 409
+            : error.code === "CPF_ALREADY_IN_USE"
+              ? 409
             : error.code === "EMAIL_ALREADY_IN_USE"
               ? 409
               : 500;

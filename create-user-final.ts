@@ -17,6 +17,7 @@ async function run() {
   const db = drizzle(client);
 
   const data = {
+    cpf: "44444444444",
     email: "mercavejo@hotmail.com",
     name: "Victor Januário Gonçalves",
     password: "vitor321",
@@ -41,7 +42,7 @@ async function run() {
     const passwordHash = await bcrypt.hash(data.password, 12);
 
     console.log("Upserting user...");
-    let [user] = await db.select().from(users).where(eq(users.email, data.email)).limit(1);
+    let [user] = await db.select().from(users).where(eq(users.cpf, data.cpf)).limit(1);
 
     if (user) {
       console.log("Updating existing user...");
@@ -53,6 +54,7 @@ async function run() {
     } else {
       console.log("Inserting new user...");
       [user] = await db.insert(users).values({
+        cpf: data.cpf,
         email: data.email,
         name: data.name,
         passwordHash,

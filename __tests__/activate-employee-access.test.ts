@@ -78,6 +78,7 @@ describe("activate employee access", () => {
                 returning: vi.fn().mockResolvedValue([
                   {
                     id: "user-1",
+                    cpf: "12345678901",
                     email: "maria@example.com",
                     name: "Maria da Silva",
                   },
@@ -108,6 +109,7 @@ describe("activate employee access", () => {
       tenantId: "11111111-1111-4111-8111-111111111111",
       referenceCode: "ref-001",
       admissionDate: "2026-04-01",
+      cpf: "123.456.789-01",
       email: "Maria@example.com",
       password: "password123",
       correlationId: "22222222-2222-4222-8222-222222222222",
@@ -116,6 +118,7 @@ describe("activate employee access", () => {
     expect(result).toMatchObject({
       tenant_id: "11111111-1111-4111-8111-111111111111",
       user_id: "user-1",
+      cpf: "12345678901",
       employee_identity_id: "emp-1",
       email: "maria@example.com",
       role: "colaborador",
@@ -161,11 +164,12 @@ describe("activate employee access", () => {
         tenantId: "11111111-1111-4111-8111-111111111111",
         referenceCode: "ref-404",
         admissionDate: "2026-04-01",
+        cpf: "123.456.789-01",
         email: "maria@example.com",
         password: "password123",
         correlationId: "22222222-2222-4222-8222-222222222222",
       }),
-    ).rejects.toMatchObject<EmployeeActivationError>({
+    ).rejects.toMatchObject({
       code: "INVALID_ACTIVATION_CREDENTIALS",
     });
 

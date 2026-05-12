@@ -19,6 +19,14 @@ type EmployeeIdentityPublicationTarget = {
   userId: string | null;
 };
 
+type PublicationTargetBlocker = {
+  document_id: string;
+  reference_code: string;
+  employee_identifier: string;
+  nome_normalizado: string | null;
+  reason: "identity_not_found" | "identity_not_active" | "identity_without_user";
+};
+
 export class EmployeeDocumentPublicationError extends Error {
   constructor(
     public readonly code:
@@ -34,6 +42,12 @@ export class EmployeeDocumentPublicationError extends Error {
     this.name = "EmployeeDocumentPublicationError";
   }
 }
+
+export type PublishEmployeeDocumentsResult = {
+  publishedCount: number;
+  skippedCount: number;
+  skippedReferenceCodes: string[];
+};
 
 function extractMatchedReferenceCode(item: BatchRoutingManifestItem): string {
   const rawCode = item.codigo_colaborador ?? item.employee_identifier;
@@ -55,6 +69,44 @@ function extractMatchedReferenceCode(item: BatchRoutingManifestItem): string {
 
 function buildDownloadFileName(documentType: string, periodRef: string): string {
   return `${documentType}-${periodRef}.pdf`;
+}
+
+function buildPublicationTargetBlocker(
+  item: BatchRoutingManifestItem,
+  referenceCode: string,
+  target: EmployeeIdentityPublicationTarget | undefined,
+): PublicationTargetBlocker | null {
+  if (!target) {
+    return {
+      document_id: item.document_id,
+      reference_code: referenceCode,
+      employee_identifier: item.employee_identifier,
+      nome_normalizado: item.nome_normalizado ?? null,
+      reason: "identity_not_found",
+    };
+  }
+
+  if (target.status !== "active") {
+    return {
+      document_id: item.document_id,
+      reference_code: referenceCode,
+      employee_identifier: item.employee_identifier,
+      nome_normalizado: item.nome_normalizado ?? null,
+      reason: "identity_not_active",
+    };
+  }
+
+  if (!target.userId) {
+    return {
+      document_id: item.document_id,
+      reference_code: referenceCode,
+      employee_identifier: item.employee_identifier,
+      nome_normalizado: item.nome_normalizado ?? null,
+      reason: "identity_without_user",
+    };
+  }
+
+  return null;
 }
 
 async function loadPublicationTargets(
@@ -119,11 +171,12 @@ export async function publishEmployeeDocumentsForBatch(
     sourceStorageKey: string | null;
     sourceStorageFilename: string | null;
     sourceStorageMimeType: string | null;
-    sourceContentBase64: string | null;
+    sourceContentBase64?: string | null;
     routingManifest: BatchRoutingManifestItem[];
+    skipMissingTargets?: boolean;
   },
   dbClient: DbLike = db,
-): Promise<{ publishedCount: number }> {
+): Promise<PublishEmployeeDocumentsResult> {
   if (!input.sourceStorageKey || !input.sourceStorageFilename || !input.sourceStorageMimeType) {
     throw new EmployeeDocumentPublicationError(
       "PUBLICATION_SOURCE_ARTIFACT_MISSING",
@@ -140,10 +193,45 @@ export async function publishEmployeeDocumentsForBatch(
     new Set(matchedItems.map((item) => extractMatchedReferenceCode(item))),
   );
   const targets = await loadPublicationTargets(input.tenantId, referenceCodes, dbClient);
+  const blockers = matchedItems.flatMap((item) => {
+    const referenceCode = extractMatchedReferenceCode(item);
+    const blocker = buildPublicationTargetBlocker(item, referenceCode, targets.get(referenceCode));
+    return blocker ? [blocker] : [];
+  });
+
+  const skippedReferenceCodes = Array.from(
+    new Set(blockers.map((blocker) => blocker.reference_code)),
+  );
+  const eligibleItems = matchedItems.filter((item) => {
+    const referenceCode = extractMatchedReferenceCode(item);
+    return !skippedReferenceCodes.includes(referenceCode);
+  });
+
+  if (blockers.length > 0 && (!input.skipMissingTargets || eligibleItems.length === 0)) {
+    throw new EmployeeDocumentPublicationError(
+      "PUBLICATION_TARGET_NOT_FOUND",
+      "Documento nao pode ser publicado sem colaborador ativado e vinculado.",
+      {
+        blocked_count: blockers.length,
+        publish_blockers: blockers,
+        missing_reference_codes: blockers
+          .filter((blocker) => blocker.reason === "identity_not_found")
+          .map((blocker) => blocker.reference_code),
+        inactive_reference_codes: blockers
+          .filter((blocker) => blocker.reason === "identity_not_active")
+          .map((blocker) => blocker.reference_code),
+        unlinked_reference_codes: blockers
+          .filter((blocker) => blocker.reason === "identity_without_user")
+          .map((blocker) => blocker.reference_code),
+      },
+    );
+  }
+
   const sourcePdfBuffer = await readDocumentArtifact(input.sourceStorageKey).catch(async (error) => {
     if (input.sourceContentBase64) {
       return Buffer.from(input.sourceContentBase64, "base64");
     }
+
     if (error instanceof Error) {
       throw new EmployeeDocumentPublicationError(
         "PUBLICATION_SOURCE_ARTIFACT_MISSING",
@@ -168,17 +256,18 @@ export async function publishEmployeeDocumentsForBatch(
     fileName: string;
     mimeType: string;
     sourcePageIndex: number;
+    contentBase64: string;
     status: "published";
     updatedAt: Date;
   }> = [];
   const createdStorageKeys: string[] = [];
 
   try {
-    for (const item of matchedItems) {
+    for (const item of eligibleItems) {
       const referenceCode = extractMatchedReferenceCode(item);
       const target = targets.get(referenceCode);
 
-      if (!target || target.status !== "active" || !target.userId) {
+      if (!target?.userId) {
         throw new EmployeeDocumentPublicationError(
           "PUBLICATION_TARGET_NOT_FOUND",
           "Documento nao pode ser publicado sem colaborador ativado e vinculado.",
@@ -254,6 +343,7 @@ export async function publishEmployeeDocumentsForBatch(
         fileName,
         mimeType: "application/pdf",
         sourcePageIndex: item.page_index,
+        contentBase64: fileBuffer.toString("base64"),
         status: "published",
         updatedAt: new Date(),
       });
@@ -267,5 +357,9 @@ export async function publishEmployeeDocumentsForBatch(
     throw error;
   }
 
-  return { publishedCount: matchedItems.length };
+  return {
+    publishedCount: eligibleItems.length,
+    skippedCount: skippedReferenceCodes.length,
+    skippedReferenceCodes,
+  };
 }

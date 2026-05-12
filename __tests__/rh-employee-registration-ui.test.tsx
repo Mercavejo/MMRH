@@ -18,7 +18,7 @@ describe("rh employee registration ui", () => {
             tenant_id: "11111111-1111-4111-8111-111111111111",
             reference_code: "REF-001",
             employee_name: "Maria da Silva",
-            admission_date: "2026-04-01",
+            admission_date: "01-04-2026",
             status: "pending_activation",
             status_label: "Pendente de ativacao",
             user_id: null,
@@ -34,6 +34,7 @@ describe("rh employee registration ui", () => {
     expect(html).toContain("Codigo de referencia");
     expect(html).toContain("Verificador secundario");
     expect(html).toContain("Maria da Silva");
+    expect(html).toContain("01-04-2026");
     expect(html).toContain("Pendente de ativacao");
   });
 

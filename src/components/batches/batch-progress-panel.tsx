@@ -6,6 +6,7 @@ import RoutingIcon from "@mui/icons-material/AltRoute";
 import SuccessIcon from "@mui/icons-material/CheckCircle";
 import { motion, AnimatePresence } from "framer-motion";
 import confetti from "canvas-confetti";
+import { BRAND_LONG_NAME } from "@/lib/brand";
 import {
   buildEmptyBatchRoutingProgress,
   type BatchRoutingProgress,
@@ -73,7 +74,7 @@ export function BatchProgressPanel(props: {
   const isPublished = summary.publication_status === "published";
   const publishedAt = summary.published_at ? new Date(summary.published_at) : null;
   const processedAt = summary.processed_at ? new Date(summary.processed_at) : null;
-  const totalPublished = summary.matched_documents;
+  const totalPublished = summary.published_documents ?? summary.matched_documents;
   const blockedGuidance =
     summary.blocked_documents === 1
       ? "Revise o documento bloqueado por ambiguidade antes de reprocessar."
@@ -211,7 +212,7 @@ export function BatchProgressPanel(props: {
                   <Chip label={`Lote: ${summary.batch_id.slice(-6).toUpperCase()}`} variant="outlined" />
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
-                  Consulte o historico do lote em &quot;Processamento de Lotes&quot; ou abra um chamado tecnico se precisar de apoio da Mercavejo.
+                  Consulte o historico do lote em &quot;Processamento de Lotes&quot; ou abra um chamado tecnico se precisar de apoio da {BRAND_LONG_NAME}.
                 </Typography>
               </Stack>
             </Paper>

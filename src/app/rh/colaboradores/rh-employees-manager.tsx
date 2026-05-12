@@ -187,7 +187,8 @@ export function RhEmployeesManager({
           <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
             <TextField
               label="Verificador secundario"
-              helperText="Use a data de admissao no formato YYYY-MM-DD."
+              helperText="Use a data de admissao no formato DD-MM-YYYY."
+              placeholder="31-12-2026"
               value={form.admission_date}
               onChange={(event) => setForm((current) => ({ ...current, admission_date: event.target.value }))}
               fullWidth

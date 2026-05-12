@@ -6,6 +6,7 @@ import { assertTenantAction, RBAC_ACTIONS, type RbacRole } from "@/lib/auth/rbac
 import { validateSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
+import { ADMIN_LABEL_INLINE } from '@/lib/brand';
 import { exceptionPriorities, exceptionStates, type ExceptionPriority, type ExceptionState } from "@/modules/exceptions/domain/exception";
 import { listBatchExceptions } from "@/modules/exceptions/application/list-exceptions";
 import { ExceptionWorkflowError } from "@/modules/exceptions/infrastructure/exception-repository";
@@ -73,7 +74,7 @@ async function loadInitialQueue(searchParams?: RhExceptionsSearchParams) {
     });
 
     if (role !== "admin_plataforma") {
-      return { initialBatchId: batchId, initialErrorMessage: "Somente admin Mercavejo pode consultar excecoes." };
+      return { initialBatchId: batchId, initialErrorMessage: `Somente ${ADMIN_LABEL_INLINE} pode consultar excecoes.` };
     }
 
     const result = await listBatchExceptions({

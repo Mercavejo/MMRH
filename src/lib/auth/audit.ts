@@ -8,6 +8,16 @@ function toUuid(value?: string | null): string {
   return value && uuidPattern.test(value) ? value : randomUUID();
 }
 
+function sanitizeAuditDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!details) {
+    return undefined;
+  }
+
+  return Object.fromEntries(
+    Object.entries(details).filter(([key]) => !key.toLowerCase().includes("cpf")),
+  );
+}
+
 export async function writeAuthAudit(params: {
   tenantId: string;
   actorId?: string;
@@ -28,7 +38,7 @@ export async function writeAuthAudit(params: {
     resourceType: "session",
     resourceId: params.actorId ?? "anonymous",
     status: params.status,
-    details: params.details,
+    details: sanitizeAuditDetails(params.details),
     ipAddress: params.ipAddress,
   });
 }

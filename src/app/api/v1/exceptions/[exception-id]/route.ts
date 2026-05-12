@@ -10,6 +10,7 @@ import { exceptions, userTenantMappings } from "@/lib/db/schema";
 import { getExceptionDetail, updateExceptionState } from "@/modules/exceptions/infrastructure/exception-repository";
 import { exceptionStates } from "@/modules/exceptions/domain/exception";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { ADMIN_LABEL_INLINE } from "@/lib/brand";
 
 const paramsSchema = z.object({
   exceptionId: z.string().uuid(),
@@ -82,7 +83,7 @@ export async function GET(
 
   if (role !== "admin_plataforma") {
     return jsonResponse(
-      errorResponse("FORBIDDEN", "Somente admin Mercavejo pode consultar excecoes.", correlationId),
+      errorResponse("FORBIDDEN", `Somente ${ADMIN_LABEL_INLINE} pode consultar excecoes.`, correlationId),
       correlationId,
       { status: 403 },
     );
@@ -174,7 +175,7 @@ export async function PATCH(
   }
 
   if (role !== "admin_plataforma") {
-    return jsonResponse(errorResponse("FORBIDDEN", "Somente admin Mercavejo pode atualizar excecoes.", correlationId), correlationId, { status: 403 });
+    return jsonResponse(errorResponse("FORBIDDEN", `Somente ${ADMIN_LABEL_INLINE} pode atualizar excecoes.`, correlationId), correlationId, { status: 403 });
   }
 
   const ownership = await db

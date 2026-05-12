@@ -13,10 +13,14 @@ import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
 import { buildCapabilityForbiddenDetails, ErrorCode } from "@/lib/api/errors";
 import {
+  persistPendingBatchImport,
   persistValidatedBatchImport,
   writeBatchImportAudit,
 } from "@/lib/rh/batches/import-batch";
-import { validateBatchImportFile } from "@/lib/rh/batches/import-validation";
+import {
+  BATCH_DOCUMENT_TYPES,
+  validateBatchImportFile,
+} from "@/lib/rh/batches/import-validation";
 import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
@@ -27,6 +31,7 @@ import { CapabilityForbiddenError, Capability } from "@/modules/plans/domain/cap
 
 const uploadSchema = z.object({
   file: z.instanceof(File),
+  document_type: z.enum(BATCH_DOCUMENT_TYPES).optional(),
 });
 
 const batchImportRoles: readonly RbacRole[] = ["rh_operator", "rh_gestor", "admin_plataforma"];
@@ -149,6 +154,10 @@ export async function POST(request: NextRequest) {
   const formData = await request.formData().catch(() => null);
   const uploadParsed = uploadSchema.safeParse({
     file: formData?.get("file"),
+    document_type:
+      typeof formData?.get("document_type") === "string"
+        ? formData?.get("document_type")
+        : undefined,
   });
 
   if (!uploadParsed.success) {
@@ -165,7 +174,60 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const validation = await validateBatchImportFile(uploadParsed.data.file);
+    const isOcrMode = Boolean(uploadParsed.data.document_type);
+
+    if (isOcrMode) {
+      const fileBuffer = Buffer.from(await uploadParsed.data.file.arrayBuffer());
+      const mimeType = uploadParsed.data.file.type || "application/pdf";
+
+      const batch = await persistPendingBatchImport(
+        {
+          tenantId: session.tenantId,
+          uploadedBy: session.userId,
+          correlationId,
+          originalFilename: uploadParsed.data.file.name,
+          fileSizeBytes: uploadParsed.data.file.size,
+          mimeType,
+          sourceFormat: "pdf",
+          documentTypeHint: uploadParsed.data.document_type,
+          sourceFileBuffer: fileBuffer,
+        },
+        db,
+      );
+
+      await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.import", resourceType: "batches", status: "success", details: { batch_id: batch.batchId, ocr_pending: true } });
+
+      return withCorrelationHeader(
+        NextResponse.json(
+          successResponse(
+            {
+              batch_id: batch.batchId,
+              validation_status: "validated",
+              validation_summary: {
+                source_format: "pdf",
+                total_rows: 0,
+                valid_rows: 0,
+                invalid_rows: 0,
+                critical_issue_count: 0,
+                warning_issue_count: 0,
+                issues: [],
+                document_type_hint: uploadParsed.data.document_type,
+                ocr_pending: true,
+              },
+              original_filename: uploadParsed.data.file.name,
+            },
+            correlationId,
+            session.tenantId,
+          ),
+          { status: 201 },
+        ),
+        correlationId,
+      );
+    }
+
+    const validation = await validateBatchImportFile(uploadParsed.data.file, {
+      pdfDocumentTypeHint: uploadParsed.data.document_type,
+    });
 
     if (!validation.is_valid) {
       await writePlaytestEvent({ tenantId: session.tenantId, actorId: session.userId, correlationId, action: "playtest.rh.batches.friction", resourceType: "batches", status: "failure", details: { cause: "file_validation", issues: validation.summary.issues } });

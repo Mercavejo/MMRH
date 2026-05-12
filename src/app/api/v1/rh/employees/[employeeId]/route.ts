@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { errorResponse, successResponse } from "@/lib/api/response";
+import { admissionDateInputPattern } from "@/modules/employee-identity/domain/employee-identity";
 import { EmployeeIdentityServiceError } from "@/modules/employee-identity/application/employee-identity-service-error";
 import { deleteEmployeeIdentity } from "@/modules/employee-identity/application/delete-employee-identity";
 import { updateEmployeeIdentity } from "@/modules/employee-identity/application/update-employee-identity";
@@ -13,7 +14,7 @@ import {
 const bodySchema = z.object({
   employee_name: z.string().min(1),
   reference_code: z.string().min(1),
-  admission_date: z.string().min(1),
+  admission_date: z.string().regex(admissionDateInputPattern),
   status: z.enum(["pending_activation", "active", "blocked", "inactive"]).optional(),
   notes: z.string().optional(),
 });

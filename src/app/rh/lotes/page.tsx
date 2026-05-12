@@ -7,13 +7,20 @@ import {
   Button,
   Chip,
   Container,
+  FormControl,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Typography,
 } from "@mui/material";
 import { DropZone } from "@/components/batches/drop-zone";
 import { BatchProgressPanel } from "@/components/batches/batch-progress-panel";
-import type { BatchImportValidationSummary } from "@/lib/rh/batches/import-validation";
+import {
+  type BatchImportDocumentType,
+  type BatchImportValidationSummary,
+} from "@/lib/rh/batches/import-validation";
 import {
   buildPendingBatchRoutingProgress,
   type BatchRoutingProgress,
@@ -22,6 +29,7 @@ import {
 type BatchImportFeedback =
   | { state: "idle" }
   | { state: "submitting" }
+  | { state: "ocr_validating"; batchId: string }
   | { state: "success"; message: string; batchId: string; summary: BatchImportValidationSummary }
   | { state: "error"; message: string; issues?: Array<Record<string, unknown>> };
 
@@ -30,25 +38,103 @@ type RoutingNotice = {
   message: string;
 } | null;
 
-export function buildBatchImportFormData(file: File): FormData {
+type ApiErrorPayload = {
+  error?: {
+    message?: string | null;
+    details?: unknown;
+  } | null;
+};
+
+type PublishApiPayload = {
+  data: (BatchRoutingProgress & {
+    total_requested: number;
+    total_published: number;
+    total_skipped: number;
+    total_failed: number;
+    skipped_reference_codes?: string[];
+  }) | null;
+  error: { message: string; details?: unknown } | null;
+};
+
+export function buildBatchImportFormData(
+  file: File,
+  documentTypeHint?: BatchImportDocumentType | null,
+): FormData {
   const formData = new FormData();
   formData.append("file", file);
+
+  if (documentTypeHint) {
+    formData.append("document_type", documentTypeHint);
+  }
+
   return formData;
 }
 
-function getApiErrorMessage(payload: { error?: { message?: string | null } | null }, fallback: string) {
+function isPublishBlocker(value: unknown): value is { reference_code: string; reason: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "reference_code" in value &&
+    typeof (value as { reference_code?: unknown }).reference_code === "string" &&
+    "reason" in value &&
+    typeof (value as { reason?: unknown }).reason === "string"
+  );
+}
+
+function getApiErrorMessage(payload: ApiErrorPayload, fallback: string) {
+  const details = payload.error?.details;
+  if (typeof details === "object" && details !== null && "publish_blockers" in details) {
+    const blockers = (details as { publish_blockers?: unknown }).publish_blockers;
+    if (Array.isArray(blockers)) {
+      const codes = blockers
+        .filter(isPublishBlocker)
+        .map((blocker) => blocker.reference_code)
+        .filter((code, index, allCodes) => allCodes.indexOf(code) === index);
+
+      if (codes.length > 0) {
+        return `Publicacao bloqueada: cadastre/ative e vincule usuario para os codigos ${codes.join(", ")}.`;
+      }
+    }
+  }
+
   const message = payload.error?.message?.trim();
   return message && message.length > 0 ? message : fallback;
 }
 
+function getPublishBlockerCodes(details: unknown): string[] {
+  if (typeof details !== "object" || details === null || !("publish_blockers" in details)) {
+    return [];
+  }
+
+  const blockers = (details as { publish_blockers?: unknown }).publish_blockers;
+  if (!Array.isArray(blockers)) {
+    return [];
+  }
+
+  return blockers
+    .filter(isPublishBlocker)
+    .map((blocker) => blocker.reference_code)
+    .filter((code, index, allCodes) => allCodes.indexOf(code) === index);
+}
+
 export function BatchImportPageView(props: {
   selectedFile: File | null;
+  selectedDocumentTypeHint: "auto" | BatchImportDocumentType;
   feedback: BatchImportFeedback;
   isSubmitDisabled: boolean;
   onFileChange: (file: File | null) => void;
+  onDocumentTypeHintChange: (value: "auto" | BatchImportDocumentType) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const { selectedFile, feedback, isSubmitDisabled, onFileChange, onSubmit } = props;
+  const {
+    selectedFile,
+    selectedDocumentTypeHint,
+    feedback,
+    isSubmitDisabled,
+    onFileChange,
+    onDocumentTypeHintChange,
+    onSubmit,
+  } = props;
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
@@ -72,6 +158,28 @@ export function BatchImportPageView(props: {
               </Typography>
             </Stack>
 
+            <FormControl size="small" sx={{ maxWidth: 360 }}>
+              <InputLabel id="batch-import-document-type-label">Tipo de importacao</InputLabel>
+              <Select
+                labelId="batch-import-document-type-label"
+                label="Tipo de importacao"
+                value={selectedDocumentTypeHint}
+                onChange={(event) =>
+                  onDocumentTypeHintChange(event.target.value as "auto" | BatchImportDocumentType)
+                }
+                disabled={feedback.state === "submitting"}
+              >
+                <MenuItem value="auto">Deteccao normal do arquivo</MenuItem>
+                <MenuItem value="cartao_ponto">Cartao de ponto escaneado (OCR)</MenuItem>
+              </Select>
+            </FormControl>
+
+            {selectedDocumentTypeHint === "cartao_ponto" ? (
+              <Alert severity="info" role="status">
+                Use esta opcao apenas para PDF escaneado de cartao de ponto. O sistema vai ler a matricula via OCR e esperar o padrao <strong>Matricula: numero</strong> no documento.
+              </Alert>
+            ) : null}
+
             <DropZone 
               onFileSelect={onFileChange}
               selectedFile={selectedFile}
@@ -88,6 +196,12 @@ export function BatchImportPageView(props: {
             {feedback.state === "submitting" ? (
               <Alert severity="info" role="status">
                 Validacao em andamento. O sistema esta conferindo estrutura e consistencia minima do relatorio.
+              </Alert>
+            ) : null}
+
+            {feedback.state === "ocr_validating" ? (
+              <Alert severity="info" role="status">
+                Processando OCR do cartao de ponto. Isso pode levar ate 2 minutos. Nao feche esta pagina.
               </Alert>
             ) : null}
 
@@ -135,6 +249,7 @@ export function BatchImportPageView(props: {
 
 export default function RhBatchImportPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedDocumentTypeHint, setSelectedDocumentTypeHint] = useState<"auto" | BatchImportDocumentType>("auto");
   const [feedback, setFeedback] = useState<BatchImportFeedback>({ state: "idle" });
   const [routingProgress, setRoutingProgress] = useState<BatchRoutingProgress | null>(null);
   const [routingNotice, setRoutingNotice] = useState<RoutingNotice>(null);
@@ -167,7 +282,10 @@ export default function RhBatchImportPage() {
     setFeedback({ state: "submitting" });
 
     const idempotencyKey = crypto.randomUUID();
-    const formData = buildBatchImportFormData(selectedFile);
+    const formData = buildBatchImportFormData(
+      selectedFile,
+      selectedDocumentTypeHint === "auto" ? null : selectedDocumentTypeHint,
+    );
     formData.append("idempotency_key", idempotencyKey);
 
     try {
@@ -180,7 +298,7 @@ export default function RhBatchImportPage() {
         data: {
           batch_id: string;
           validation_status: "validated" | "blocked";
-          validation_summary: BatchImportValidationSummary;
+          validation_summary: BatchImportValidationSummary & { ocr_pending?: boolean };
           original_filename: string;
         } | null;
         error: { message: string; details?: { summary?: BatchImportValidationSummary } } | null;
@@ -204,6 +322,73 @@ export default function RhBatchImportPage() {
           message,
           issues: validationIssues,
         });
+        return;
+      }
+
+      const isOcrPending = Boolean(payload.data.validation_summary?.ocr_pending);
+
+      if (isOcrPending) {
+        setFeedback({ state: "ocr_validating", batchId: payload.data.batch_id });
+        setRoutingNotice({
+          tone: "info",
+          message: "Lote recebido. Iniciando processamento OCR do cartao de ponto...",
+        });
+
+        try {
+          const validateResponse = await fetch(
+            `/api/v1/rh/batches/${payload.data.batch_id}/validate`,
+            { method: "POST" },
+          );
+
+          const validatePayload = (await validateResponse.json()) as {
+            data: {
+              batch_id: string;
+              validation_status: "validated" | "blocked";
+              validation_summary: BatchImportValidationSummary;
+              original_filename: string;
+            } | null;
+            error: { message: string } | null;
+          };
+
+          if (!validateResponse.ok || !validatePayload.data) {
+            const validateMessage = validatePayload.error?.message ?? "Falha na validacao OCR do lote.";
+            setRoutingProgress(null);
+            setRoutingNotice({ tone: "error", message: validateMessage });
+            setFeedback({
+              state: "error",
+              message: validateMessage,
+            });
+            return;
+          }
+
+          setRoutingProgress(
+            buildPendingBatchRoutingProgress({
+              batchId: validatePayload.data.batch_id,
+              tenantId: payload.meta.tenant_id ?? "",
+              totalDocuments: validatePayload.data.validation_summary.total_rows,
+            }),
+          );
+          setRoutingNotice({
+            tone: "info",
+            message: "Lote validado via OCR. Inicie o roteamento para bloquear ambiguidades antes da publicacao.",
+          });
+          setFeedback({
+            state: "success",
+            message: `Lote ${validatePayload.data.original_filename} validado com OCR (${validatePayload.data.validation_summary.total_rows} linha(s)).`,
+            batchId: validatePayload.data.batch_id,
+            summary: validatePayload.data.validation_summary,
+          });
+        } catch {
+          setRoutingProgress(null);
+          setRoutingNotice({
+            tone: "error",
+            message: "Falha de comunicacao ao processar OCR do lote.",
+          });
+          setFeedback({
+            state: "error",
+            message: "Falha ao processar OCR do lote. Tente novamente.",
+          });
+        }
         return;
       }
 
@@ -257,7 +442,7 @@ export default function RhBatchImportPage() {
 
       const payload = (await response.json()) as {
         data: BatchRoutingProgress | null;
-        error: { message: string } | null;
+        error: { message: string; details?: unknown } | null;
       };
 
       if (!response.ok || !payload.data) {
@@ -354,39 +539,65 @@ export default function RhBatchImportPage() {
     });
 
     try {
-      const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/publish`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          idempotency_key: idempotencyKey,
-        }),
-      });
+      const publishBatchRequest = async (skipMissingTargets: boolean) => {
+        const response = await fetch(`/api/v1/rh/batches/${routingProgress.batch_id}/publish`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            skip_missing_targets: skipMissingTargets,
+          }),
+        });
 
-      const payload = (await response.json()) as {
-        data: (BatchRoutingProgress & {
-          total_requested: number;
-          total_published: number;
-          total_skipped: number;
-          total_failed: number;
-        }) | null;
-        error: { message: string } | null;
+        const payload = (await response.json()) as PublishApiPayload;
+
+        return { response, payload };
       };
+
+      let { response, payload } = await publishBatchRequest(false);
+
+      if (!response.ok || !payload.data) {
+        const blockerCodes = getPublishBlockerCodes(payload.error?.details);
+
+        if (response.status === 409 && blockerCodes.length > 0) {
+          const proceed = window.confirm(
+            `Os codigos ${blockerCodes.join(", ")} nao estao cadastrados/ativados com usuario vinculado. Deseja publicar apenas os demais documentos?`,
+          );
+
+          if (!proceed) {
+            setRoutingNotice({
+              tone: "warning",
+              message: `Publicacao mantida em espera. Pendencias: ${blockerCodes.join(", ")}.`,
+            });
+            return;
+          }
+
+          setRoutingNotice({
+            tone: "info",
+            message: `Publicando parcialmente o lote. Os codigos ${blockerCodes.join(", ")} permanecerao pendentes.`,
+          });
+
+          ({ response, payload } = await publishBatchRequest(true));
+        }
+      }
 
       if (!response.ok || !payload.data) {
         setRoutingNotice({
           tone: "error",
-          message: payload.error?.message ?? "Nao foi possivel publicar o lote.",
+          message: getApiErrorMessage(payload, "Nao foi possivel publicar o lote."),
         });
         return;
       }
 
       setRoutingProgress(payload.data);
       setRoutingNotice({
-        tone: "success",
+        tone: payload.data.total_skipped > 0 ? "warning" : "success",
         message:
-          payload.data.total_published > 0
-            ? `Lote publicado com ${payload.data.total_published} documento(s).`
-            : "Lote publicado com sucesso.",
+          payload.data.total_skipped > 0 && payload.data.skipped_reference_codes?.length
+            ? `Lote publicado com ${payload.data.total_published} documento(s). Permaneceram pendentes: ${payload.data.skipped_reference_codes.join(", ")}.`
+            : payload.data.total_published > 0
+              ? `Lote publicado com ${payload.data.total_published} documento(s).`
+              : "Lote publicado com sucesso.",
       });
     } catch {
       setRoutingNotice({
@@ -402,9 +613,11 @@ export default function RhBatchImportPage() {
     <Stack spacing={3}>
       <BatchImportPageView
         selectedFile={selectedFile}
+        selectedDocumentTypeHint={selectedDocumentTypeHint}
         feedback={feedback}
-        isSubmitDisabled={feedback.state === "submitting" || !selectedFile}
+        isSubmitDisabled={feedback.state === "submitting" || feedback.state === "ocr_validating" || !selectedFile}
         onFileChange={setSelectedFile}
+        onDocumentTypeHintChange={setSelectedDocumentTypeHint}
         onSubmit={handleSubmit}
       />
 

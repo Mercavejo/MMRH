@@ -90,7 +90,7 @@ describe("rh employee registration api", () => {
           tenant_id: SESSION_TENANT_ID,
           reference_code: "REF-001",
           employee_name: "Maria da Silva",
-          admission_date: "2026-04-01",
+          admission_date: "01-04-2026",
           status: "pending_activation",
           status_label: "Pendente de ativacao",
           user_id: null,
@@ -106,7 +106,7 @@ describe("rh employee registration api", () => {
       tenant_id: SESSION_TENANT_ID,
       reference_code: "REF-001",
       employee_name: "Maria da Silva",
-      admission_date: "2026-04-01",
+      admission_date: "01-04-2026",
       status: "pending_activation",
       status_label: "Pendente de ativacao",
       user_id: null,
@@ -119,7 +119,7 @@ describe("rh employee registration api", () => {
       tenant_id: SESSION_TENANT_ID,
       reference_code: "REF-001",
       employee_name: "Maria de Souza",
-      admission_date: "2026-04-01",
+      admission_date: "01-04-2026",
       status: "active",
       status_label: "Ativo",
       user_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -140,7 +140,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "ref-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
         notes: "Primeira carga RH",
       }),
     });
@@ -178,7 +178,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "ref-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
       }),
     });
 
@@ -205,7 +205,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "ref-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
         status: "active",
       }),
     });
@@ -259,7 +259,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "REF-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
       }),
     });
 
@@ -288,7 +288,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "REF-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
       }),
     });
 
@@ -318,7 +318,7 @@ describe("rh employee registration api", () => {
       body: JSON.stringify({
         employee_name: "Maria da Silva",
         reference_code: "REF-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
       }),
     });
 
@@ -368,7 +368,7 @@ describe("rh employee registration api", () => {
         body: JSON.stringify({
           employee_name: "Maria de Souza",
           reference_code: "REF-001",
-          admission_date: "2026-04-01",
+          admission_date: "01-04-2026",
           status: "active",
         }),
       },
@@ -398,7 +398,7 @@ describe("rh employee registration api", () => {
         body: JSON.stringify({
           employee_name: "Maria de Souza",
           reference_code: "REF-001",
-          admission_date: "2026-04-01",
+          admission_date: "01-04-2026",
           status: "active",
         }),
       },
@@ -442,7 +442,7 @@ describe("rh employee registration api", () => {
         body: JSON.stringify({
           employee_name: "Maria de Souza",
           reference_code: "REF-001",
-          admission_date: "2026-04-01",
+          admission_date: "01-04-2026",
           status: "active",
         }),
       },

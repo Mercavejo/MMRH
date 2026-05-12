@@ -7,6 +7,7 @@ import {
   Typography,
 } from "@mui/material";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/cookies";
 import { validateSession } from "@/lib/auth/session";
@@ -14,7 +15,6 @@ import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
 import { listEmployeeNotifications } from "@/lib/notifications/employee-notification-tracking";
 import { NotificationReadButton } from "./notification-read-button";
-import { MOCK_NOTIFICATIONS } from "@/lib/demo/mock-data";
 
 type NotificationItem = Awaited<ReturnType<typeof listEmployeeNotifications>>[number];
 
@@ -125,13 +125,8 @@ export default async function EmployeeNotificationsPage() {
 
   const role = await resolveRole(session.userId, session.tenantId);
 
-  // Gestor RH em modo simulação — entregar notificações mock para demonstração
   if (role !== "colaborador") {
-    return (
-      <EmployeeNotificationsPageView
-        items={MOCK_NOTIFICATIONS}
-      />
-    );
+    redirect("/rh");
   }
 
   let items: NotificationItem[] = [];

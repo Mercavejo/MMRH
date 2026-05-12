@@ -6,6 +6,7 @@ import { db } from "@/lib/db/client";
 import { userTenantMappings } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { Button, Container, Paper, Stack, Typography, Box } from "@mui/material";
+import { BRAND_LONG_NAME } from "@/lib/brand";
 import { tokens } from "@/lib/theme/tokens";
 
 export default async function Home() {
@@ -62,7 +63,7 @@ export default async function Home() {
         >
           <Stack spacing={4}>
             <Typography variant="h3" sx={{ fontWeight: 800, color: tokens.colors.primary }}>
-              SISTEMA ADALTO
+              {BRAND_LONG_NAME}
               <Box component="span" sx={{ color: tokens.colors.action }}>.</Box>
             </Typography>
             

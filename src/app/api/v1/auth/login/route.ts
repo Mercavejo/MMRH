@@ -15,9 +15,12 @@ import {
   CORRELATION_ID_HEADER,
   resolveCorrelationId,
 } from "@/lib/observability/correlation-id";
+import { isValidCpfFormat, normalizeCpf } from "@/lib/validation/cpf";
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  cpf: z.string().trim().refine(isValidCpfFormat, {
+    message: "CPF invalido. Informe 11 digitos com ou sem pontuacao.",
+  }),
   password: z.string().min(8),
   tenant_id: z.string().uuid().optional(),
 });
@@ -46,12 +49,13 @@ export async function POST(request: NextRequest) {
     const userRows = await db
       .select({
         id: users.id,
+        cpf: users.cpf,
         email: users.email,
         passwordHash: users.passwordHash,
         isActive: users.isActive,
       })
       .from(users)
-      .where(and(eq(users.email, parsed.data.email), eq(users.isActive, true)))
+      .where(and(eq(users.cpf, normalizeCpf(parsed.data.cpf)), eq(users.isActive, true)))
       .limit(1);
 
     const user = userRows[0];

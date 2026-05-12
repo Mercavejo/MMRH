@@ -19,6 +19,7 @@ async function main() {
   const db = drizzle(client);
 
   const userData = {
+    cpf: "44444444444",
     email: "mercavejo@hotmail.com",
     name: "Victor Januário Gonçalves",
     password: "vitor321",
@@ -60,7 +61,7 @@ async function main() {
     const existingUsers = await db
       .select()
       .from(users)
-      .where(eq(users.email, userData.email));
+      .where(eq(users.cpf, userData.cpf));
 
     if (existingUsers.length > 0) {
       userId = existingUsers[0].id;
@@ -77,13 +78,14 @@ async function main() {
       const [newUser] = await db
         .insert(users)
         .values({
+          cpf: userData.cpf,
           email: userData.email,
           name: userData.name,
           passwordHash,
         })
         .returning({ id: users.id });
       userId = newUser.id;
-      console.log(`Usuário '${userData.email}' criado (ID: ${userId})`);
+      console.log(`Usuário '${userData.cpf}' criado (ID: ${userId})`);
     }
 
     // 4. Mapeamento de Admin (rh_gestor)

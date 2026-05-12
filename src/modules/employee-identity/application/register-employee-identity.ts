@@ -1,4 +1,8 @@
-import { EmployeeIdentityDomainError, normalizeEmployeeIdentityInput } from "../domain/employee-identity";
+import {
+  EmployeeIdentityDomainError,
+  formatAdmissionDate,
+  normalizeEmployeeIdentityInput,
+} from "../domain/employee-identity";
 import {
   EmployeeIdentityRepositoryError,
   insertEmployeeIdentity,
@@ -24,7 +28,7 @@ export async function registerEmployeeIdentity(input: {
       tenant_id: row.tenantId,
       reference_code: row.referenceCode,
       employee_name: row.employeeName,
-      admission_date: row.admissionDate,
+      admission_date: formatAdmissionDate(row.admissionDate),
       status: row.status,
       status_label: row.status === "pending_activation" ? "Pendente de ativacao" : row.status,
       user_id: row.userId,

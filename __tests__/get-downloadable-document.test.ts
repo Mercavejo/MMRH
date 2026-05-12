@@ -34,6 +34,7 @@ describe("getDownloadableDocument", () => {
         storageKey: "tenants/tenant-a/documents/doc-1/page-1.pdf",
         fileName: "holerite-2026-03.pdf",
         mimeType: "application/pdf",
+        contentBase64: Buffer.from("%PDF-db-fallback%").toString("base64"),
       },
     ]);
 
@@ -50,6 +51,7 @@ describe("getDownloadableDocument", () => {
       mime_type: "application/pdf",
       file_name: "holerite-2026-03.pdf",
       storage_key: "tenants/tenant-a/documents/doc-1/page-1.pdf",
+      content_base64: Buffer.from("%PDF-db-fallback%").toString("base64"),
     });
   });
 

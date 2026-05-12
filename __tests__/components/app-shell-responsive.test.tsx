@@ -29,4 +29,24 @@ describe('AppShell responsive controls', () => {
     expect(html).toContain('Alternar para Visão Colaborador');
     expect(html).toContain('Visão Colaborador');
   });
+
+  it('does not render notifications tab for RH shell', () => {
+    const html = renderToStaticMarkup(
+      <AppShell userRole="rh" userName="Victor" hasAccessToBoth tenantRole="rh_gestor">
+        <span>Conteúdo</span>
+      </AppShell>
+    );
+
+    expect(html).not.toContain('Notificações');
+  });
+
+  it('keeps notifications tab for colaborador shell', () => {
+    const html = renderToStaticMarkup(
+      <AppShell userRole="colaborador" userName="Ana" tenantRole="colaborador">
+        <span>Conteúdo</span>
+      </AppShell>
+    );
+
+    expect(html).toContain('Notificações');
+  });
 });

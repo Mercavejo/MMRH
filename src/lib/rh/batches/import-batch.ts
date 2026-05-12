@@ -49,6 +49,96 @@ export async function writeBatchImportAudit(params: {
   });
 }
 
+export async function persistPendingBatchImport(params: {
+  tenantId: string;
+  uploadedBy: string;
+  correlationId: string;
+  originalFilename: string;
+  fileSizeBytes: number;
+  mimeType: string;
+  sourceFormat: "csv" | "json" | "pdf";
+  documentTypeHint?: string;
+  sourceFileBuffer: Buffer;
+}, dbClient: DbLike = db): Promise<{ batchId: string }> {
+  const batchId = randomUUID();
+  const sourceStorageKey = buildBatchSourceStorageKey({
+    tenantId: params.tenantId,
+    batchId,
+    fileName: params.originalFilename,
+    mimeType: params.mimeType,
+  });
+
+  await writeDocumentArtifact({
+    storageKey: sourceStorageKey,
+    content: params.sourceFileBuffer,
+  });
+
+  try {
+    await dbClient.transaction(async (transaction) => {
+      await transaction.insert(batches).values({
+        id: batchId,
+        tenantId: params.tenantId,
+        uploadedBy: params.uploadedBy,
+        originalFilename: params.originalFilename,
+        fileSizeBytes: params.fileSizeBytes,
+        mimeType: params.mimeType,
+        sourceStorageKey,
+        sourceStorageFilename: params.originalFilename,
+        sourceStorageMimeType: params.mimeType,
+        sourceContentBase64: params.sourceFileBuffer.toString("base64"),
+        sourceFormat: params.sourceFormat,
+        validationStatus: "validated",
+        validationSummary: {
+          source_format: params.sourceFormat,
+          total_rows: 0,
+          valid_rows: 0,
+          invalid_rows: 0,
+          critical_issue_count: 0,
+          warning_issue_count: 0,
+          issues: [],
+          document_type_hint: params.documentTypeHint,
+          ocr_pending: true,
+        },
+        routingStatus: "pending",
+        routingManifest: [],
+        routingTotalCount: 0,
+        routingMatchedCount: 0,
+        routingPendingCount: 0,
+        routingFailedCount: 0,
+        routingAmbiguousCount: 0,
+        routingBlockedReason: null,
+        routingProcessedAt: null,
+        correlationId: normalizeUuidOrRandom(params.correlationId),
+      });
+
+      await writeBatchImportAudit(
+        {
+          tenantId: params.tenantId,
+          actorId: params.uploadedBy,
+          correlationId: params.correlationId,
+          status: "success",
+          batchId,
+          details: {
+            original_filename: params.originalFilename,
+            source_format: params.sourceFormat,
+            total_rows: 0,
+            critical_issue_count: 0,
+            warning_issue_count: 0,
+            source_storage_key: sourceStorageKey,
+            ocr_pending: true,
+          },
+        },
+        transaction,
+      );
+    });
+  } catch (error) {
+    await deleteDocumentArtifact(sourceStorageKey).catch(() => undefined);
+    throw error;
+  }
+
+  return { batchId };
+}
+
 export async function persistValidatedBatchImport(params: {
   tenantId: string;
   uploadedBy: string;
@@ -85,6 +175,7 @@ export async function persistValidatedBatchImport(params: {
         sourceStorageKey,
         sourceStorageFilename: params.validation.original_filename,
         sourceStorageMimeType: params.validation.mime_type,
+        sourceContentBase64: params.sourceFileBuffer.toString("base64"),
         sourceFormat: params.validation.summary.source_format,
         organizationalUnit: resolveOrganizationalUnit(
           params.validation.summary as unknown as Record<string, unknown>,

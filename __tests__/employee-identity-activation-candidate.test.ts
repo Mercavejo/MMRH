@@ -33,14 +33,14 @@ describe("employee identity activation candidate", () => {
     const result = await getEmployeeIdentityActivationCandidate({
       tenantId: "11111111-1111-4111-8111-111111111111",
       referenceCode: " ref-001 ",
-      admissionDate: "2026-04-01",
+      admissionDate: "01-04-2026",
     });
 
     expect(findEmployeeIdentityForActivationInDbMock).toHaveBeenCalledWith({
       tenantId: "11111111-1111-4111-8111-111111111111",
-      referenceCode: "REF-001",
-      admissionDate: "2026-04-01",
-    });
+        referenceCode: "REF-001",
+        admissionDate: "2026-04-01",
+      });
     expect(result).toMatchObject({
       employee_identity_id: "emp-1",
       tenant_id: "11111111-1111-4111-8111-111111111111",
@@ -48,7 +48,7 @@ describe("employee identity activation candidate", () => {
       activation_status: "pending_activation",
       can_self_activate: true,
       secondary_verifier: {
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
       },
     });
   });
@@ -60,7 +60,7 @@ describe("employee identity activation candidate", () => {
       getEmployeeIdentityActivationCandidate({
         tenantId: "11111111-1111-4111-8111-111111111111",
         referenceCode: "REF-404",
-        admissionDate: "2026-04-01",
+        admissionDate: "01-04-2026",
       }),
     ).rejects.toMatchObject<EmployeeIdentityServiceError>({
       code: "NOT_FOUND",
@@ -87,7 +87,7 @@ describe("employee identity activation candidate", () => {
       getEmployeeIdentityActivationCandidate({
         tenantId: "11111111-1111-4111-8111-111111111111",
         referenceCode: "REF-001",
-        admissionDate: "2026-04-01",
+        admissionDate: "01-04-2026",
       }),
     ).rejects.toMatchObject<EmployeeIdentityServiceError>({
       code: "CONFLICT",

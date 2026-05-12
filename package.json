@@ -11,8 +11,10 @@
     "test:run": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "dev:cleanup-test-accounts": "npx tsx drizzle/scripts/cleanup-test-accounts.ts",
     "dev:seed-playtesting": "npx tsx drizzle/scripts/seed-playtesting.ts",
-    "dev:reset-playtesting": "npx tsx drizzle/scripts/reset-playtesting.ts"
+    "dev:reset-playtesting": "npx tsx drizzle/scripts/reset-playtesting.ts",
+    "worker:ocr": "node --import tsx workers/ocr-worker.ts"
   },
   "dependencies": {
     "@emotion/cache": "^11.14.0",
@@ -21,6 +23,7 @@
     "@mui/icons-material": "^9.0.0",
     "@mui/material": "^9.0.0",
     "@mui/material-nextjs": "^9.0.0",
+    "@napi-rs/canvas": "^0.1.100",
     "@upstash/redis": "^1.37.0",
     "bcryptjs": "^3.0.3",
     "canvas-confetti": "^1.9.4",
@@ -32,6 +35,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-dropzone": "^15.0.0",
+    "tesseract.js": "^7.0.0",
     "unpdf": "^1.6.1",
     "zod": "^4.3.6"
   },

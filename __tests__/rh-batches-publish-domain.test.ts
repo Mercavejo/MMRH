@@ -3,6 +3,7 @@ import { publishBatch, BatchPublicationError } from "@/modules/batches/applicati
 
 const {
   EmployeeDocumentPublicationError,
+  countPublishedDocumentsForBatchMock,
   loadBatchPublicationSnapshotMock,
   loadBatchPublicationExceptionsMock,
   markBatchPublicationStartingMock,
@@ -27,6 +28,7 @@ const {
       this.name = "EmployeeDocumentPublicationError";
     }
   },
+  countPublishedDocumentsForBatchMock: vi.fn(),
   loadBatchPublicationSnapshotMock: vi.fn(),
   loadBatchPublicationExceptionsMock: vi.fn(),
   markBatchPublicationStartingMock: vi.fn(),
@@ -39,6 +41,7 @@ const {
 }));
 
 vi.mock("@/modules/batches/infrastructure/batch-repository", () => ({
+  countPublishedDocumentsForBatch: countPublishedDocumentsForBatchMock,
   loadBatchPublicationSnapshot: loadBatchPublicationSnapshotMock,
   loadBatchPublicationExceptions: loadBatchPublicationExceptionsMock,
   markBatchPublicationStarting: markBatchPublicationStartingMock,
@@ -69,7 +72,19 @@ describe("publish batch domain", () => {
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    dbClient.transaction.mockClear();
+    loadBatchPublicationSnapshotMock.mockReset();
+    loadBatchPublicationExceptionsMock.mockReset();
+    countPublishedDocumentsForBatchMock.mockReset();
+    markBatchPublicationStartingMock.mockReset();
+    markBatchPublicationSucceededMock.mockReset();
+    markBatchPublicationFailedMock.mockReset();
+    publishEmployeeDocumentsForBatchMock.mockReset();
+    writeBatchPublicationAuditMock.mockReset();
+    buildDomainEventMock.mockReset();
+    buildDomainEventMock.mockImplementation((event) => event);
+    publishDomainEventMock.mockReset();
+    publishDomainEventMock.mockImplementation(async (event) => event);
 
     loadBatchPublicationSnapshotMock
       .mockResolvedValueOnce({
@@ -136,8 +151,13 @@ describe("publish batch domain", () => {
       });
 
     loadBatchPublicationExceptionsMock.mockResolvedValue([]);
+    countPublishedDocumentsForBatchMock.mockResolvedValue(2);
     writeBatchPublicationAuditMock.mockResolvedValue(undefined);
-    publishEmployeeDocumentsForBatchMock.mockResolvedValue({ publishedCount: 1 });
+    publishEmployeeDocumentsForBatchMock.mockResolvedValue({
+      publishedCount: 2,
+      skippedCount: 0,
+      skippedReferenceCodes: [],
+    });
     markBatchPublicationStartingMock.mockResolvedValue({
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       tenantId: "11111111-1111-4111-8111-111111111111",
@@ -250,6 +270,36 @@ describe("publish batch domain", () => {
     );
   });
 
+  it("publishes partially when missing targets are explicitly allowed", async () => {
+    publishEmployeeDocumentsForBatchMock.mockReset();
+    publishEmployeeDocumentsForBatchMock.mockResolvedValue({
+      publishedCount: 1,
+      skippedCount: 1,
+      skippedReferenceCodes: ["REF-999"],
+    });
+
+    const result = await publishBatch(
+      {
+        tenantId: "11111111-1111-4111-8111-111111111111",
+        batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        actorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        correlationId: "11111111-1111-4111-8111-111111111111",
+        idempotencyKey: "idem-123456",
+        skipMissingTargets: true,
+      },
+      dbClient as never,
+    );
+
+    expect(result.publication_status).toBe("published");
+    expect(result.total_published).toBe(1);
+    expect(result.total_skipped).toBe(1);
+    expect(result.skipped_reference_codes).toEqual(["REF-999"]);
+    expect(publishEmployeeDocumentsForBatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skipMissingTargets: true }),
+      transactionClient,
+    );
+  });
+
   it("maps artifact availability failures to operational 503 errors", async () => {
     loadBatchPublicationSnapshotMock.mockReset();
     loadBatchPublicationSnapshotMock.mockResolvedValueOnce({
@@ -319,6 +369,7 @@ describe("publish batch domain", () => {
     });
     markBatchPublicationFailedMock.mockReset();
     markBatchPublicationFailedMock.mockResolvedValue(undefined);
+    publishEmployeeDocumentsForBatchMock.mockReset();
     publishEmployeeDocumentsForBatchMock.mockImplementationOnce(async () => {
       throw new EmployeeDocumentPublicationError(
         "PUBLICATION_ARTIFACT_UNAVAILABLE",

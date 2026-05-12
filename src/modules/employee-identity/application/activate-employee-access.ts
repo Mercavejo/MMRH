@@ -3,6 +3,7 @@ import { db } from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { employeeIdentities, userTenantMappings, users } from "@/lib/db/schema";
+import { maskCpf, normalizeCpf } from "@/lib/validation/cpf";
 import {
   EmployeeIdentityDomainError,
   normalizeAdmissionDate,
@@ -15,6 +16,7 @@ export class EmployeeActivationError extends Error {
     public readonly code:
       | "INVALID_ACTIVATION_CREDENTIALS"
       | "ACTIVATION_UNAVAILABLE"
+      | "CPF_ALREADY_IN_USE"
       | "EMAIL_ALREADY_IN_USE"
       | "INTERNAL_ERROR",
     message: string,
@@ -27,6 +29,30 @@ export class EmployeeActivationError extends Error {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeOptionalEmail(value?: string): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = normalizeEmail(value);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function isCpfUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: string; constraint_name?: string; constraint?: string };
+  return (
+    candidate.code === "23505" &&
+    (candidate.constraint_name === "users_cpf_unique" ||
+      candidate.constraint_name === "users_cpf_key" ||
+      candidate.constraint === "users_cpf_unique" ||
+      candidate.constraint === "users_cpf_key")
+  );
 }
 
 function isEmailUniqueViolation(error: unknown): boolean {
@@ -56,7 +82,8 @@ export async function activateEmployeeAccess(input: {
   tenantId: string;
   referenceCode: string;
   admissionDate: string;
-  email: string;
+  cpf: string;
+  email?: string;
   password: string;
   correlationId: string;
   ipAddress?: string;
@@ -65,7 +92,8 @@ export async function activateEmployeeAccess(input: {
   const tenantId = input.tenantId;
   const referenceCode = normalizeReferenceCode(input.referenceCode);
   const admissionDate = normalizeAdmissionDate(input.admissionDate);
-  const email = normalizeEmail(input.email);
+  const cpf = normalizeCpf(input.cpf);
+  const email = normalizeOptionalEmail(input.email);
 
   try {
     const passwordHash = await hashPassword(input.password);
@@ -115,25 +143,35 @@ export async function activateEmployeeAccess(input: {
       let insertedUsers;
       try {
         insertedUsers = await transaction
-          .insert(users)
-          .values({
-            email,
-            name: candidate.employeeName,
-            passwordHash,
+            .insert(users)
+            .values({
+              cpf,
+              email,
+              name: candidate.employeeName,
+              passwordHash,
             isActive: true,
             updatedAt: new Date(),
           })
           .returning({
             id: users.id,
+            cpf: users.cpf,
             email: users.email,
             name: users.name,
           });
       } catch (error) {
+        if (isCpfUniqueViolation(error)) {
+          throw new EmployeeActivationError(
+            "CPF_ALREADY_IN_USE",
+            "Este CPF ja esta em uso. Procure o RH para concluir seu acesso.",
+            { cpf_masked: maskCpf(cpf) },
+          );
+        }
+
         if (isEmailUniqueViolation(error)) {
           throw new EmployeeActivationError(
             "EMAIL_ALREADY_IN_USE",
             "Este e-mail ja esta em uso. Procure o RH para concluir seu acesso.",
-            { email },
+            { email_present: true },
           );
         }
 
@@ -189,6 +227,7 @@ export async function activateEmployeeAccess(input: {
       return {
         tenant_id: tenantId,
         user_id: createdUser.id,
+        cpf: createdUser.cpf,
         email: createdUser.email,
         employee_identity_id: candidate.id,
         employee_name: candidate.employeeName,
@@ -207,7 +246,8 @@ export async function activateEmployeeAccess(input: {
       status: "success",
       details: {
         reference_code: activated.reference_code,
-        email: activated.email,
+        cpf_masked: maskCpf(activated.cpf),
+        email_present: Boolean(activated.email),
       },
     });
 

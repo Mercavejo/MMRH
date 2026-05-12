@@ -49,6 +49,7 @@ describe("employee documents download api", () => {
       mime_type: "application/pdf",
       file_name: "holerite-2026-03.pdf",
       storage_key: "documents/internal/path.pdf",
+      content_base64: null,
     });
 
     deps.writeDocumentDownloadAuditFn.mockResolvedValue(undefined);
@@ -340,5 +341,67 @@ describe("employee documents download api", () => {
 
     expect(signedResponse.status).toBe(503);
     expect(signedBody.error.code).toBe("DOWNLOAD_UNAVAILABLE");
+  });
+
+  it("uses database content fallback when private artifact is unavailable", async () => {
+    deps.getDownloadableDocumentFn.mockResolvedValue({
+      document_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      document_type: "holerite",
+      period_ref: "2026-03",
+      mime_type: "application/pdf",
+      file_name: "holerite-2026-03.pdf",
+      storage_key: "documents/internal/path.pdf",
+      content_base64: Buffer.from("%PDF-db-fallback%").toString("base64"),
+    });
+    deps.readDocumentArtifactFn.mockRejectedValue(
+      new DocumentStorageError(
+        "DOCUMENT_STORAGE_NOT_FOUND",
+        "Artefato ausente.",
+      ),
+    );
+
+    const initRequest = new NextRequest(
+      "http://localhost/api/v1/employee/documents/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/download?response=json",
+      {
+        headers: {
+          cookie: "session_id=token",
+        },
+      },
+    );
+
+    const initResponse = await handleEmployeeDocumentDownload(
+      initRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+    const initBody = await initResponse.json();
+    const signedUrl = new URL(initBody.data.download_url as string);
+
+    const signedRequest = new NextRequest(signedUrl.toString(), {
+      headers: {
+        cookie: "session_id=token",
+      },
+    });
+
+    const signedResponse = await handleEmployeeDocumentDownload(
+      signedRequest,
+      {
+        documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      },
+      deps,
+    );
+
+    expect(signedResponse.status).toBe(200);
+    expect(Buffer.from(await signedResponse.arrayBuffer()).toString()).toBe(
+      "%PDF-db-fallback%",
+    );
+    expect(deps.writeDocumentDownloadAuditFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "success",
+        details: expect.objectContaining({ source: "database_fallback" }),
+      }),
+    );
   });
 });

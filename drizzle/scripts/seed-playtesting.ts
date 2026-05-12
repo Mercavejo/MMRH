@@ -8,6 +8,9 @@ import { eq, inArray } from "drizzle-orm";
 // ─── Config ──────────────────────────────────────────────────────────────────
 const DEMO_TENANT_SLUG = "demo-playtesting-tenant";
 const DEMO_TENANT_NAME = "Empresa Demo S/A";
+const ADMIN_CPF = "11111111111";
+const GESTOR_CPF = "22222222222";
+const COLAB_CPF = "33333333333";
 const ADMIN_EMAIL = "admin@demo.com";
 const GESTOR_EMAIL = "gestor@demo.com";
 const COLAB_EMAIL = "colaborador@demo.com";
@@ -107,8 +110,10 @@ async function main() {
 
   // Delete leftover demo users from a previous partial run (no tenant yet)
   await db.delete(users).where(inArray(users.email, [ADMIN_EMAIL, GESTOR_EMAIL, COLAB_EMAIL]));
+  await db.delete(users).where(inArray(users.cpf, [ADMIN_CPF, GESTOR_CPF, COLAB_CPF]));
 
   const [admin] = await db.insert(users).values({
+    cpf: ADMIN_CPF,
     email: ADMIN_EMAIL,
     name: "Admin Mercavejo (Playtesting)",
     passwordHash,
@@ -116,6 +121,7 @@ async function main() {
   }).returning();
 
   const [gestor] = await db.insert(users).values({
+    cpf: GESTOR_CPF,
     email: GESTOR_EMAIL,
     name: "Gestor Cliente (Playtesting)",
     passwordHash,
@@ -123,6 +129,7 @@ async function main() {
   }).returning();
 
   const [colaborador] = await db.insert(users).values({
+    cpf: COLAB_CPF,
     email: COLAB_EMAIL,
     name: "Colaborador (Playtesting)",
     passwordHash,
@@ -317,9 +324,9 @@ async function main() {
   console.log(`Documentos: ${docsLote1.length + docsLote2.length + docsLote3.length} total`);
   console.log("─────────────────────────────────────────");
   console.log("Credenciais:");
-  console.log(`  Admin Mercavejo : ${ADMIN_EMAIL}`);
-  console.log(`  Gestor Cliente : ${GESTOR_EMAIL}`);
-  console.log(`  Colaborador : ${COLAB_EMAIL}`);
+  console.log(`  Admin Mercavejo : ${ADMIN_CPF}`);
+  console.log(`  Gestor Cliente : ${GESTOR_CPF}`);
+  console.log(`  Colaborador : ${COLAB_CPF}`);
   console.log(`  Senha       : ${DEMO_PASSWORD}`);
   console.log("─────────────────────────────────────────");
   process.exit(0);

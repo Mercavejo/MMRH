@@ -1,6 +1,7 @@
 import {
   buildEmployeeIdentityStatusLabel,
   EmployeeIdentityDomainError,
+  formatAdmissionDate,
   normalizeEmployeeIdentityInput,
 } from "../domain/employee-identity";
 import {
@@ -32,7 +33,7 @@ export async function updateEmployeeIdentity(input: {
       tenant_id: row.tenantId,
       reference_code: row.referenceCode,
       employee_name: row.employeeName,
-      admission_date: row.admissionDate,
+      admission_date: formatAdmissionDate(row.admissionDate),
       status: row.status,
       status_label: buildEmployeeIdentityStatusLabel(row.status),
       user_id: row.userId,

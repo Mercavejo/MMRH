@@ -31,6 +31,7 @@ import { getDashboardSummary } from '@/modules/indicators/application/get-dashbo
 import { loadLatestBatch, type BatchPublicationSnapshot } from '@/modules/batches/infrastructure/batch-repository';
 import { CountUpValue } from '@/components/ui/CountUpValue';
 import { ErrorAlert } from '@/components/ui/ErrorAlert';
+import { BRAND_LONG_NAME, SUPPORT_MAILTO_HREF } from '@/lib/brand';
 
 async function recordPlaytestEvent(params: Parameters<typeof writePlaytestEvent>[0]) {
   try {
@@ -140,7 +141,7 @@ export default async function RHDashboardPage() {
       return (
         <ErrorAlert
           message="Não foi possível carregar o painel de envios."
-          action="Atualize a página. Se o problema continuar, abra um chamado técnico para a equipe Mercavejo."
+          action={`Atualize a página. Se o problema continuar, abra um chamado técnico para a equipe ${BRAND_LONG_NAME}.`}
         />
       );
     }
@@ -338,7 +339,7 @@ export default async function RHDashboardPage() {
                       </Typography>
                       <Button
                         component="a"
-                        href="mailto:suporte@adalto.local?subject=Chamado%20t%C3%A9cnico%20Sistema%20Adalto"
+                        href={SUPPORT_MAILTO_HREF}
                         variant="outlined"
                         fullWidth
                         color="primary"
@@ -375,7 +376,7 @@ function ClientDashboard({ latestBatch }: { latestBatch: BatchPublicationSnapsho
               Envios e Acompanhamento
             </Typography>
             <Typography variant="body1" color="text.secondary">
-              Envie lotes, acompanhe o resultado funcional do processamento e acione a Mercavejo quando precisar de ajuda.
+              Envie lotes, acompanhe o resultado funcional do processamento e acione a {BRAND_LONG_NAME} quando precisar de ajuda.
             </Typography>
           </Box>
           <Button
@@ -447,13 +448,13 @@ function ClientDashboard({ latestBatch }: { latestBatch: BatchPublicationSnapsho
 
               <Card variant="outlined" sx={{ borderRadius: 6 }}>
                 <CardContent sx={{ p: 4 }}>
-                  <Typography variant="h3" sx={{ mb: 2 }}>Suporte Mercavejo</Typography>
+                  <Typography variant="h3" sx={{ mb: 2 }}>Suporte {BRAND_LONG_NAME}</Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
                     Se houver falha ou comportamento inesperado, abra um chamado técnico para o time interno.
                   </Typography>
                   <Button
                     component="a"
-                    href="mailto:suporte@adalto.local?subject=Chamado%20t%C3%A9cnico%20Sistema%20Adalto"
+                    href={SUPPORT_MAILTO_HREF}
                     variant="outlined"
                     fullWidth
                     color="primary"

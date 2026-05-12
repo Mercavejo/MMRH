@@ -1,6 +1,16 @@
 import { db } from "@/lib/db/client";
 import { auditLogs } from "@/lib/db/schema";
 
+function sanitizeAuditDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!details) {
+    return undefined;
+  }
+
+  return Object.fromEntries(
+    Object.entries(details).filter(([key]) => !key.toLowerCase().includes("cpf")),
+  );
+}
+
 export async function writeEmployeeIdentityAudit(input: {
   tenantId: string;
   actorId?: string;
@@ -18,6 +28,6 @@ export async function writeEmployeeIdentityAudit(input: {
     resourceType: "employee_identity",
     resourceId: input.resourceId,
     status: input.status,
-    details: input.details,
+    details: sanitizeAuditDetails(input.details),
   });
 }

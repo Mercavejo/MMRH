@@ -8,7 +8,7 @@ import { getDownloadableDocument } from "@/lib/documents/get-downloadable-docume
 import { listEmployeeDocuments } from "@/lib/documents/list-documents";
 import { publishEmployeeDocumentsForBatch } from "@/lib/documents/publish-employee-documents";
 import { persistValidatedBatchImport } from "@/lib/rh/batches/import-batch";
-import { readDocumentArtifact } from "@/lib/documents/storage";
+import { DocumentStorageError } from "@/lib/documents/storage";
 
 const extractPagesMock = vi.fn(async ([pageInfo]: Array<{ includePages?: number[] }>) =>
   Buffer.from(`%PDF-flow-page-${(pageInfo.includePages?.[0] ?? 0) + 1}%`),
@@ -200,7 +200,9 @@ describe("employee publication download flow", () => {
           tenantId: "11111111-1111-4111-8111-111111111111",
         }),
         getDownloadableDocumentFn,
-        readDocumentArtifactFn: readDocumentArtifact,
+        readDocumentArtifactFn: vi.fn().mockRejectedValue(
+          new DocumentStorageError("DOCUMENT_STORAGE_NOT_FOUND", "Artefato efemero ausente."),
+        ),
         assertTenantActionFn: vi.fn(),
         resolveRoleFn: vi.fn().mockResolvedValue("colaborador"),
         writeDocumentDownloadAuditFn: vi.fn().mockResolvedValue(undefined),
@@ -227,7 +229,9 @@ describe("employee publication download flow", () => {
           tenantId: "11111111-1111-4111-8111-111111111111",
         }),
         getDownloadableDocumentFn,
-        readDocumentArtifactFn: readDocumentArtifact,
+        readDocumentArtifactFn: vi.fn().mockRejectedValue(
+          new DocumentStorageError("DOCUMENT_STORAGE_NOT_FOUND", "Artefato efemero ausente."),
+        ),
         assertTenantActionFn: vi.fn(),
         resolveRoleFn: vi.fn().mockResolvedValue("colaborador"),
         writeDocumentDownloadAuditFn: vi.fn().mockResolvedValue(undefined),

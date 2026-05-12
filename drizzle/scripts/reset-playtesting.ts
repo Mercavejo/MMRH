@@ -5,7 +5,7 @@ import { eq, inArray } from "drizzle-orm";
 import { spawnSync } from "child_process";
 
 const DEMO_TENANT_SLUG = "demo-playtesting-tenant";
-const DEMO_EMAILS = ["admin@demo.com", "gestor@demo.com", "colaborador@demo.com"];
+const DEMO_CPFS = ["11111111111", "22222222222", "33333333333"];
 
 async function main() {
   const { db }   = await import("../../src/lib/db/client");
@@ -82,12 +82,12 @@ async function main() {
   const remainingUsers = await db
     .select({ id: users.id })
     .from(users)
-    .where(inArray(users.email, DEMO_EMAILS));
+    .where(inArray(users.cpf, DEMO_CPFS));
 
   if (remainingUsers.length > 0) {
     const ids = remainingUsers.map((u) => u.id);
     await db.delete(userTenantMappings).where(inArray(userTenantMappings.userId, ids));
-    await db.delete(users).where(inArray(users.email, DEMO_EMAILS));
+    await db.delete(users).where(inArray(users.cpf, DEMO_CPFS));
     console.log(">> Usuários demo removidos.");
   }
 

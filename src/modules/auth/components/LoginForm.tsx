@@ -1,24 +1,30 @@
 "use client";
 
 import { useState } from "react";
-import { 
-  Box, 
-  Button, 
-  TextField, 
-  Typography, 
-  Paper, 
-  Alert, 
-  Stack, 
+import {
+  Box,
+  Button,
+  TextField,
+  Typography,
+  Paper,
+  Alert,
+  Stack,
   CircularProgress,
   IconButton,
-  InputAdornment
+  InputAdornment,
 } from "@mui/material";
-import { Visibility, VisibilityOff, LockOutlined, EmailOutlined } from "@mui/icons-material";
+import {
+  BadgeOutlined,
+  Visibility,
+  VisibilityOff,
+  LockOutlined,
+} from "@mui/icons-material";
 import { useRouter } from "next/navigation";
 import { tokens } from "@/lib/theme/tokens";
+import { formatCpf } from "@/lib/validation/cpf";
 
 export function LoginForm() {
-  const [email, setEmail] = useState("");
+  const [cpf, setCpf] = useState("");
   const [password, setPassword] = useState("");
   const [tenantId, setTenantId] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -36,7 +42,7 @@ export function LoginForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email,
+          cpf,
           password,
           tenant_id: tenantId.trim() || undefined,
         }),
@@ -95,19 +101,24 @@ export function LoginForm() {
         {error && <Alert severity="error">{error}</Alert>}
 
         <TextField
-          label="E-mail"
-          type="email"
+          label="CPF"
+          type="text"
           fullWidth
           required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          value={cpf}
+          onChange={(e) => setCpf(formatCpf(e.target.value))}
           variant="outlined"
           disabled={isLoading}
+          placeholder="000.000.000-00"
+          helperText="Informe o CPF usado no seu cadastro."
           slotProps={{
+            htmlInput: {
+              maxLength: 14,
+            },
             input: {
               startAdornment: (
                 <InputAdornment position="start">
-                  <EmailOutlined sx={{ color: tokens.colors.text.muted }} />
+                  <BadgeOutlined sx={{ color: tokens.colors.text.muted }} />
                 </InputAdornment>
               ),
             },

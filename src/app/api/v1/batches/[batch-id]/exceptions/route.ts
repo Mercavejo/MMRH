@@ -12,6 +12,7 @@ import { ExceptionWorkflowError } from "@/modules/exceptions/infrastructure/exce
 import { exceptionPriorities, exceptionStates } from "@/modules/exceptions/domain/exception";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
 import { writePlaytestEvent } from "@/lib/observability/playtest-audit";
+import { ADMIN_LABEL_INLINE } from "@/lib/brand";
 
 const paramsSchema = z.object({
   batchId: z.string().uuid(),
@@ -174,13 +175,13 @@ export async function GET(
       status: role === "rh_gestor" ? "success" : "failure",
       details: playtestDetails(role, {
         cause: "forbidden",
-        reason: "Somente admin Mercavejo pode consultar excecoes.",
+        reason: `Somente ${ADMIN_LABEL_INLINE} pode consultar excecoes.`,
         resource_path: "/api/v1/batches/[batch-id]/exceptions",
         batch_id: paramsParsed.data.batchId,
       }),
     });
     return jsonResponse(
-      errorResponse("FORBIDDEN", "Somente admin Mercavejo pode consultar excecoes.", correlationId),
+      errorResponse("FORBIDDEN", `Somente ${ADMIN_LABEL_INLINE} pode consultar excecoes.`, correlationId),
       correlationId,
       { status: 403 },
     );

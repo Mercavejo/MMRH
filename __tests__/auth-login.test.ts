@@ -70,6 +70,7 @@ describe("auth login route", () => {
     selectResultQueue.push([
       {
         id: "user-1",
+        cpf: "12345678901",
         email: "user@example.com",
         passwordHash: "hash",
         isActive: true,
@@ -86,7 +87,7 @@ describe("auth login route", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: "user@example.com",
+        cpf: "123.456.789-01",
         password: "password123",
       }),
     });
@@ -107,6 +108,7 @@ describe("auth login route", () => {
     selectResultQueue.push([
       {
         id: "user-1",
+        cpf: "12345678901",
         email: "user@example.com",
         passwordHash: "hash",
         isActive: true,
@@ -127,7 +129,7 @@ describe("auth login route", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: "user@example.com",
+        cpf: "12345678901",
         password: "password123",
       }),
     });
@@ -144,6 +146,7 @@ describe("auth login route", () => {
     selectResultQueue.push([
       {
         id: "user-1",
+        cpf: "12345678901",
         email: "user@example.com",
         passwordHash: "hash",
         isActive: true,
@@ -164,7 +167,7 @@ describe("auth login route", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: "user@example.com",
+        cpf: "12345678901",
         password: "password123",
         tenant_id: "22222222-2222-4222-8222-222222222222",
       }),
@@ -191,7 +194,7 @@ describe("auth login route", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: "user@example.com",
+        cpf: "12345678901",
         password: "password123",
       }),
     });

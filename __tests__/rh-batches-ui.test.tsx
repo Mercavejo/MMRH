@@ -58,15 +58,28 @@ describe("rh batch import ui", () => {
     expect(formData.get("file")).toBe(file);
   });
 
+  it("adds document_type hint for scanned cartao de ponto uploads", () => {
+    const file = new File(["%PDF-1.4"], "cartao-ponto.pdf", {
+      type: "application/pdf",
+    });
+
+    const formData = buildBatchImportFormData(file, "cartao_ponto");
+
+    expect(formData.get("file")).toBe(file);
+    expect(formData.get("document_type")).toBe("cartao_ponto");
+  });
+
   it("renders loading state while submitting", () => {
     const html = renderToStaticMarkup(
-      <BatchImportPageView
-        selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
-        feedback={{ state: "submitting" }}
-        isSubmitDisabled={true}
-        onFileChange={vi.fn()}
-        onSubmit={vi.fn()}
-      />,
+        <BatchImportPageView
+          selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
+          selectedDocumentTypeHint="auto"
+          feedback={{ state: "submitting" }}
+          isSubmitDisabled={true}
+          onFileChange={vi.fn()}
+          onDocumentTypeHintChange={vi.fn()}
+          onSubmit={vi.fn()}
+        />,
     );
 
     expect(html).toContain("Validacao em andamento.");
@@ -75,9 +88,10 @@ describe("rh batch import ui", () => {
 
   it("renders inline success and error feedback", () => {
     const successHtml = renderToStaticMarkup(
-      <BatchImportPageView
-        selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
-        feedback={{
+        <BatchImportPageView
+          selectedFile={new File(["employee_identifier"], "lote-rh.csv", { type: "text/csv" })}
+          selectedDocumentTypeHint="auto"
+          feedback={{
           state: "success",
           message: "Lote validado com sucesso.",
           batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -91,16 +105,18 @@ describe("rh batch import ui", () => {
             issues: [],
           },
         }}
-        isSubmitDisabled={false}
-        onFileChange={vi.fn()}
-        onSubmit={vi.fn()}
-      />,
+          isSubmitDisabled={false}
+          onFileChange={vi.fn()}
+          onDocumentTypeHintChange={vi.fn()}
+          onSubmit={vi.fn()}
+        />,
     );
 
     const errorHtml = renderToStaticMarkup(
-      <BatchImportPageView
-        selectedFile={null}
-        feedback={{
+        <BatchImportPageView
+          selectedFile={null}
+          selectedDocumentTypeHint="cartao_ponto"
+          feedback={{
           state: "error",
           message: "O relatorio geral nao passou na validacao inicial.",
           issues: [
@@ -112,15 +128,17 @@ describe("rh batch import ui", () => {
             },
           ],
         }}
-        isSubmitDisabled={false}
-        onFileChange={vi.fn()}
-        onSubmit={vi.fn()}
-      />,
+          isSubmitDisabled={false}
+          onFileChange={vi.fn()}
+          onDocumentTypeHintChange={vi.fn()}
+          onSubmit={vi.fn()}
+        />,
     );
 
     expect(successHtml).toContain("Lote validado com sucesso.");
     expect(successHtml).toContain("Uma acao principal por tela");
     expect(errorHtml).toContain("O relatorio geral nao passou na validacao inicial.");
+    expect(errorHtml).toContain("Matricula: numero");
     expect(errorHtml).toContain("missing_column");
     expect(errorHtml).toContain("period_ref");
   });
@@ -161,6 +179,9 @@ describe("rh batch import ui", () => {
           publication_attempts: 1,
           processed_at: "2026-04-13T12:04:30.000Z",
           published_at: "2026-04-13T12:05:00.000Z",
+          published_documents: 2,
+          skipped_documents: 0,
+          skipped_reference_codes: [],
           published_by: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           last_publication_correlation_id: "11111111-1111-4111-8111-111111111111",
           last_publication_idempotency_key: "idem-123456",

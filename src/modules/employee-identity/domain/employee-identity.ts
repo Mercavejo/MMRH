@@ -5,6 +5,8 @@ export const EMPLOYEE_IDENTITY_STATUS_VALUES = [
   "inactive",
 ] as const;
 
+export const admissionDateInputPattern = /^(?:\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})$/;
+
 export type EmployeeIdentityStatus = (typeof EMPLOYEE_IDENTITY_STATUS_VALUES)[number];
 
 export type EmployeeIdentityInput = {
@@ -47,6 +49,53 @@ function collapseWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
+function isValidIsoDateParts(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  return (
+    candidate.getUTCFullYear() === year &&
+    candidate.getUTCMonth() === month - 1 &&
+    candidate.getUTCDate() === day
+  );
+}
+
+function toIsoAdmissionDate(value: string): string | null {
+  const normalized = collapseWhitespace(value);
+
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const numericYear = Number(year);
+    const numericMonth = Number(month);
+    const numericDay = Number(day);
+
+    return isValidIsoDateParts(numericYear, numericMonth, numericDay)
+      ? `${year}-${month}-${day}`
+      : null;
+  }
+
+  const brMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!brMatch) {
+    return null;
+  }
+
+  const [, day, month, year] = brMatch;
+  const numericYear = Number(year);
+  const numericMonth = Number(month);
+  const numericDay = Number(day);
+
+  return isValidIsoDateParts(numericYear, numericMonth, numericDay)
+    ? `${year}-${month}-${day}`
+    : null;
+}
+
 export function normalizeEmployeeIdentityStatus(value?: string): EmployeeIdentityStatus {
   const normalized = value?.trim() ?? "pending_activation";
 
@@ -86,8 +135,8 @@ export function normalizeEmployeeName(value: string): string {
 }
 
 export function normalizeAdmissionDate(value: string): string {
-  const normalized = collapseWhitespace(value);
-  if (!/^\d{4}-(0[1-9]|1[0-2])-\d{2}$/.test(normalized)) {
+  const isoDate = toIsoAdmissionDate(value);
+  if (!isoDate) {
     throw new EmployeeIdentityDomainError(
       "INVALID_ADMISSION_DATE",
       "Verificador secundario invalido.",
@@ -95,7 +144,13 @@ export function normalizeAdmissionDate(value: string): string {
     );
   }
 
-  return normalized;
+  return isoDate;
+}
+
+export function formatAdmissionDate(value: string): string {
+  const normalized = normalizeAdmissionDate(value);
+  const [year, month, day] = normalized.split("-");
+  return `${day}-${month}-${year}`;
 }
 
 export function normalizeEmployeeIdentityInput(input: EmployeeIdentityInput) {
@@ -147,7 +202,7 @@ export function buildEmployeeIdentityActivationDescriptor(record: EmployeeIdenti
     activation_status: status,
     can_self_activate: true,
     secondary_verifier: {
-      admission_date: admissionDate,
+      admission_date: formatAdmissionDate(admissionDate),
     },
   };
 }

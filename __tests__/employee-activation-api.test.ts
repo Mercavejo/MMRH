@@ -39,6 +39,7 @@ describe("employee activation api", () => {
     activateEmployeeAccessMock.mockResolvedValue({
       tenant_id: "11111111-1111-4111-8111-111111111111",
       user_id: "user-1",
+      cpf: "12345678901",
       employee_identity_id: "emp-1",
       employee_name: "Maria da Silva",
       email: "maria@example.com",
@@ -55,7 +56,9 @@ describe("employee activation api", () => {
       body: JSON.stringify({
         tenant_id: "11111111-1111-4111-8111-111111111111",
         reference_code: "REF-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
+        cpf: "123.456.789-01",
+        cpf_confirmation: "123.456.789-01",
         email: "maria@example.com",
         password: "password123",
       }),
@@ -83,6 +86,8 @@ describe("employee activation api", () => {
         tenant_id: "not-a-uuid",
         reference_code: "",
         admission_date: "01/04/2026",
+        cpf: "123",
+        cpf_confirmation: "456",
         email: "bad-email",
         password: "123",
       }),
@@ -101,6 +106,7 @@ describe("employee activation api", () => {
     activateEmployeeAccessMock.mockResolvedValue({
       tenant_id: "11111111-1111-4111-8111-111111111111",
       user_id: "user-1",
+      cpf: "12345678901",
       employee_identity_id: "emp-1",
       employee_name: "Maria da Silva",
       email: "maria@example.com",
@@ -118,7 +124,9 @@ describe("employee activation api", () => {
       body: JSON.stringify({
         tenant_id: "11111111-1111-4111-8111-111111111111",
         reference_code: "REF-001",
-        admission_date: "2026-04-01",
+        admission_date: "01-04-2026",
+        cpf: "123.456.789-01",
+        cpf_confirmation: "123.456.789-01",
         email: "maria@example.com",
         password: "password123",
       }),

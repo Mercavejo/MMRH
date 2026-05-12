@@ -10,6 +10,7 @@ import { exceptions, userTenantMappings } from "@/lib/db/schema";
 import { recordCorrectiveExceptionAction } from "@/modules/exceptions/application/record-exception-action";
 import { exceptionCorrectionResults } from "@/modules/exceptions/domain/exception";
 import { CORRELATION_ID_HEADER, resolveCorrelationId } from "@/lib/observability/correlation-id";
+import { ADMIN_LABEL_INLINE } from "@/lib/brand";
 
 const paramsSchema = z.object({
   exceptionId: z.string().uuid(),
@@ -92,7 +93,7 @@ export async function POST(
   }
 
   if (role !== "admin_plataforma") {
-    return jsonResponse(errorResponse("FORBIDDEN", "Somente admin Mercavejo pode registrar acoes corretivas.", correlationId), correlationId, { status: 403 });
+    return jsonResponse(errorResponse("FORBIDDEN", `Somente ${ADMIN_LABEL_INLINE} pode registrar acoes corretivas.`, correlationId), correlationId, { status: 403 });
   }
 
   const ownership = await db

@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { batches, exceptions } from "@/lib/db/schema";
+import { batches, employeeDocuments, exceptions } from "@/lib/db/schema";
 import type { BatchRoutingManifestItem } from "@/lib/rh/batches/batch-routing";
 
 type DbLike = Pick<typeof db, "select" | "update">;
@@ -227,4 +227,22 @@ export async function loadLatestBatch(
     .limit(1);
 
   return rows[0] ?? null;
+}
+
+export async function countPublishedDocumentsForBatch(
+  input: { tenantId: string; batchId: string },
+  dbClient: DbLike = db,
+): Promise<number> {
+  const rows = await dbClient
+    .select({ count: sql<number>`count(*)::int` })
+    .from(employeeDocuments)
+    .where(
+      and(
+        eq(employeeDocuments.tenantId, input.tenantId),
+        eq(employeeDocuments.batchId, input.batchId),
+        eq(employeeDocuments.status, "published"),
+      ),
+    );
+
+  return rows[0]?.count ?? 0;
 }

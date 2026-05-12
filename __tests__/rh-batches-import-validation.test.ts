@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { validateBatchImportFile } from "@/lib/rh/batches/import-validation";
 
-const { getDocumentProxyMock, extractTextMock } = vi.hoisted(() => ({
+const { getDocumentProxyMock, extractTextMock, extractPdfTextWithOcrMock } = vi.hoisted(() => ({
   getDocumentProxyMock: vi.fn(),
   extractTextMock: vi.fn(),
+  extractPdfTextWithOcrMock: vi.fn(),
 }));
 
 vi.mock("unpdf", () => ({
   getDocumentProxy: getDocumentProxyMock,
   extractText: extractTextMock,
+}));
+
+vi.mock("@/lib/rh/batches/ocr-engine", () => ({
+  extractPdfTextWithOcr: extractPdfTextWithOcrMock,
 }));
 
 function mockParsedPdf(input: { text: string; numpages: number }) {
@@ -218,5 +223,102 @@ describe("rh batch import validation", () => {
 
     expect(result.is_valid).toBe(true);
     expect(file.text).not.toHaveBeenCalled();
+  });
+
+  it("uses OCR for scanned cartao de ponto when pdf text is empty", async () => {
+    mockParsedPdf({
+      text: "",
+      numpages: 1,
+    });
+    extractPdfTextWithOcrMock.mockResolvedValue({
+      text: "Matricula: 0091\nPeriodo: 2026-03\nNome: Marcelo Aparecido Pereira dos Santos",
+      numpages: 1,
+      averageConfidence: 96,
+      pages: [
+        {
+          pageIndex: 1,
+          text: "Matricula: 0091\nPeriodo: 2026-03\nNome: Marcelo Aparecido Pereira dos Santos",
+          confidence: 96,
+        },
+      ],
+    });
+
+    const file = new File(["%PDF-1.4 scanned"], "cartao-ponto.pdf", {
+      type: "application/pdf",
+    });
+
+    const result = await validateBatchImportFile(file, {
+      pdfDocumentTypeHint: "cartao_ponto",
+    });
+
+    expect(result.is_valid).toBe(true);
+    expect(result.summary.ocr_used).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].employee_identifier).toBe("0091");
+    expect(result.rows[0].document_type).toBe("cartao_ponto");
+  });
+
+  it("extracts matricula and period from real scanned point-card OCR layout", async () => {
+    mockParsedPdf({
+      text: "",
+      numpages: 3,
+    });
+    extractPdfTextWithOcrMock.mockResolvedValue({
+      text: [
+        [
+          "RELATÓRIO ESPELHO DE PONTO",
+          "Matrícula: 91                                   Funcionário: MARCELO APARECIDO PEREIRA DOS SANTOS",
+          "Competência                                                   Período: — 01/12/2023 à 31/12/2023",
+        ].join("\n"),
+        [
+          "212",
+          "Competência:",
+          "Matrícula:",
+          "Funcionário: MOISES IGNACIO GARCIA CEI ISENTO",
+          "Período: — 01/12/2023 à 31/12/2023 Último cálculo: 04/01/2024 06:20:40",
+        ].join("\n"),
+        [
+          "RELATÓRIO ESPELHO DE PONTO",
+          "Matrícula: 179                                                 Funcionário: VALDEMAR ARAGÃO BASTOS",
+          "Competência                                                      Período: — 01/12/2023 à 31/12/2023",
+        ].join("\n"),
+      ].join("\f"),
+      numpages: 3,
+      averageConfidence: 75.66,
+      pages: [
+        { pageIndex: 1, text: "p1", confidence: 74 },
+        { pageIndex: 2, text: "p2", confidence: 74 },
+        { pageIndex: 3, text: "p3", confidence: 79 },
+      ],
+    });
+
+    const file = new File(["%PDF-1.4 scanned"], "cartao-ponto-real.pdf", {
+      type: "application/pdf",
+    });
+
+    const result = await validateBatchImportFile(file, {
+      pdfDocumentTypeHint: "cartao_ponto",
+    });
+
+    expect(result.is_valid).toBe(true);
+    expect(result.rows.map((row) => row.employee_identifier)).toEqual(["91", "212", "179"]);
+    expect(result.rows.every((row) => row.period_ref === "2023-12")).toBe(true);
+  });
+
+  it("keeps blocking empty pdf text when OCR mode was not requested", async () => {
+    mockParsedPdf({
+      text: "",
+      numpages: 1,
+    });
+
+    const file = new File(["%PDF-1.4 scanned"], "cartao-ponto.pdf", {
+      type: "application/pdf",
+    });
+
+    const result = await validateBatchImportFile(file);
+
+    expect(result.is_valid).toBe(false);
+    expect(result.summary.issues.some((issue) => issue.code === "PDF_TEXT_NOT_EXTRACTABLE")).toBe(true);
+    expect(extractPdfTextWithOcrMock).not.toHaveBeenCalled();
   });
 });

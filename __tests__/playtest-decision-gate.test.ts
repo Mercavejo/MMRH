@@ -298,7 +298,7 @@ describe("playtest decision gate", () => {
     const original = `# generated: 2026-04-27T17:20:03-03:00
 # last_updated: 2026-04-28T14:26:00-03:00
 last_updated: 2026-04-28T23:59:00-03:00
-project: SISTEMA ADALTO
+project: MMRH Gestão de Pessoas
 development_status:
   epic-9: in-progress
   9-4-emitir-recomendacao-go-fix-defer-para-o-proximo-ciclo: in-progress

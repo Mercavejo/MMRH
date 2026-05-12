@@ -37,6 +37,9 @@ export const batchRoutingProgressSchema = z.object({
   last_publication_correlation_id: z.string().trim().nullable().optional(),
   last_publication_idempotency_key: z.string().trim().nullable().optional(),
   last_publication_error: z.string().trim().nullable().optional(),
+  published_documents: z.number().int().nonnegative().optional(),
+  skipped_documents: z.number().int().nonnegative().optional(),
+  skipped_reference_codes: z.array(z.string().trim().min(1)).optional(),
 });
 
 export type BatchRoutingProgress = z.infer<typeof batchRoutingProgressSchema>;
@@ -61,6 +64,9 @@ export function buildEmptyBatchRoutingProgress(): BatchRoutingProgress {
     last_publication_correlation_id: null,
     last_publication_idempotency_key: null,
     last_publication_error: null,
+    published_documents: 0,
+    skipped_documents: 0,
+    skipped_reference_codes: [],
   };
 }
 
@@ -88,6 +94,9 @@ export function buildPendingBatchRoutingProgress(params: {
     last_publication_correlation_id: null,
     last_publication_idempotency_key: null,
     last_publication_error: null,
+    published_documents: 0,
+    skipped_documents: 0,
+    skipped_reference_codes: [],
   };
 }
 

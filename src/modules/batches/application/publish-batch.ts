@@ -2,11 +2,13 @@ import { db } from "@/lib/db/client";
 import { buildDomainEvent, publishDomainEvent } from "@/lib/events/publisher";
 import {
   EmployeeDocumentPublicationError,
+  type PublishEmployeeDocumentsResult,
   publishEmployeeDocumentsForBatch,
 } from "@/lib/documents/publish-employee-documents";
 import { buildBatchRoutingProgressFromRecord } from "@/lib/rh/batches/batch-progress";
 import { writeBatchPublicationAudit } from "@/lib/rh/batches/publish-audit";
 import {
+  countPublishedDocumentsForBatch,
   loadBatchPublicationExceptions,
   loadBatchPublicationSnapshot,
   markBatchPublicationFailed,
@@ -32,6 +34,7 @@ export type PublishBatchResult = ReturnType<typeof buildBatchRoutingProgressFrom
   total_published: number;
   total_skipped: number;
   total_failed: number;
+  skipped_reference_codes?: string[];
 };
 
 function mapPublicationFailure(error: unknown): BatchPublicationError | null {
@@ -66,7 +69,11 @@ function mapPublicationFailure(error: unknown): BatchPublicationError | null {
   return null;
 }
 
-function buildPublishedResult(snapshot: BatchPublicationSnapshot): PublishBatchResult {
+function buildPublishedResult(
+  snapshot: BatchPublicationSnapshot,
+  publishedCount: number,
+  skippedReferenceCodes: string[] = [],
+): PublishBatchResult {
   const routingProgress = buildBatchRoutingProgressFromRecord({
     id: snapshot.id,
     tenantId: snapshot.tenantId,
@@ -90,9 +97,12 @@ function buildPublishedResult(snapshot: BatchPublicationSnapshot): PublishBatchR
   return {
     ...routingProgress,
     total_requested: snapshot.routingTotalCount,
-    total_published: snapshot.routingMatchedCount,
-    total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
+    total_published: publishedCount,
+    total_skipped: Math.max(0, snapshot.routingTotalCount - publishedCount),
     total_failed: 0,
+    published_documents: publishedCount,
+    skipped_documents: Math.max(0, snapshot.routingTotalCount - publishedCount),
+    skipped_reference_codes: skippedReferenceCodes,
   };
 }
 
@@ -102,6 +112,7 @@ export async function publishBatch(input: {
   actorId: string;
   correlationId: string;
   idempotencyKey: string;
+  skipMissingTargets?: boolean;
 }, dbClient = db): Promise<PublishBatchResult> {
   const snapshot = await loadBatchPublicationSnapshot(
     { tenantId: input.tenantId, batchId: input.batchId },
@@ -118,7 +129,12 @@ export async function publishBatch(input: {
 
   if (snapshot.publicationStatus === "published") {
     if (snapshot.lastPublicationIdempotencyKey === input.idempotencyKey) {
-      return buildPublishedResult(snapshot);
+      const publishedCount = await countPublishedDocumentsForBatch(
+        { tenantId: input.tenantId, batchId: input.batchId },
+        dbClient,
+      );
+
+      return buildPublishedResult(snapshot, publishedCount);
     }
 
     throw new BatchPublicationError(
@@ -190,6 +206,7 @@ export async function publishBatch(input: {
   }
 
   let reservation: BatchPublicationSnapshot | null;
+  let publicationResult: PublishEmployeeDocumentsResult | null = null;
 
   try {
     reservation = await dbClient.transaction(async (transaction) => {
@@ -208,7 +225,7 @@ export async function publishBatch(input: {
         return null;
       }
 
-      await publishEmployeeDocumentsForBatch(
+      publicationResult = await publishEmployeeDocumentsForBatch(
         {
           tenantId: input.tenantId,
           batchId: input.batchId,
@@ -217,6 +234,7 @@ export async function publishBatch(input: {
           sourceStorageMimeType: snapshot.sourceStorageMimeType,
           sourceContentBase64: snapshot.sourceContentBase64,
           routingManifest: snapshot.routingManifest,
+          skipMissingTargets: input.skipMissingTargets,
         },
         transaction,
       );
@@ -262,7 +280,12 @@ export async function publishBatch(input: {
     );
 
     if (currentSnapshot?.publicationStatus === "published" && currentSnapshot.lastPublicationIdempotencyKey === input.idempotencyKey) {
-      return buildPublishedResult(currentSnapshot);
+      const publishedCount = await countPublishedDocumentsForBatch(
+        { tenantId: input.tenantId, batchId: input.batchId },
+        dbClient,
+      );
+
+      return buildPublishedResult(currentSnapshot, publishedCount);
     }
 
     throw new BatchPublicationError(
@@ -277,6 +300,15 @@ export async function publishBatch(input: {
     );
   }
 
+  const publicationSummary = publicationResult as PublishEmployeeDocumentsResult | null;
+  const publishedCount = publicationSummary
+    ? publicationSummary.publishedCount
+    : await countPublishedDocumentsForBatch(
+        { tenantId: input.tenantId, batchId: input.batchId },
+        dbClient,
+      );
+  const totalSkipped = Math.max(0, snapshot.routingTotalCount - publishedCount);
+
   await writeBatchPublicationAudit(
     {
       tenantId: input.tenantId,
@@ -287,10 +319,11 @@ export async function publishBatch(input: {
       stage: "started",
       details: {
         total_requested: snapshot.routingTotalCount,
-        total_published: snapshot.routingMatchedCount,
-        total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
+        total_published: publishedCount,
+        total_skipped: totalSkipped,
         total_failed: 0,
         idempotency_key: input.idempotencyKey,
+        skipped_reference_codes: publicationSummary?.skippedReferenceCodes ?? [],
       },
     },
     dbClient,
@@ -312,7 +345,8 @@ export async function publishBatch(input: {
           batch_id: input.batchId,
           publication_status: "published",
           total_requested: snapshot.routingTotalCount,
-          total_published: snapshot.routingMatchedCount,
+          total_published: publishedCount,
+          total_skipped: totalSkipped,
           idempotency_key: input.idempotencyKey,
         },
       }),
@@ -331,10 +365,11 @@ export async function publishBatch(input: {
       stage: "finished",
       details: {
         total_requested: snapshot.routingTotalCount,
-        total_published: snapshot.routingMatchedCount,
-        total_skipped: Math.max(0, snapshot.routingTotalCount - snapshot.routingMatchedCount),
+        total_published: publishedCount,
+        total_skipped: totalSkipped,
         total_failed: 0,
         idempotency_key: input.idempotencyKey,
+        skipped_reference_codes: publicationSummary?.skippedReferenceCodes ?? [],
       },
     },
     dbClient,
@@ -349,5 +384,9 @@ export async function publishBatch(input: {
     throw new BatchPublicationError("NOT_FOUND", "Lote nao encontrado.", 404);
   }
 
-  return buildPublishedResult(refreshed);
+  return buildPublishedResult(
+    refreshed,
+    publishedCount,
+    publicationSummary?.skippedReferenceCodes ?? [],
+  );
 }

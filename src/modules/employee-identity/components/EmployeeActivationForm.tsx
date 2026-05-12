@@ -12,11 +12,14 @@ import {
 } from "@mui/material";
 import { useRouter } from "next/navigation";
 import { tokens } from "@/lib/theme/tokens";
+import { formatCpf, normalizeCpf } from "@/lib/validation/cpf";
 
 type FormState = {
   tenant_id: string;
   reference_code: string;
   admission_date: string;
+  cpf: string;
+  cpf_confirmation: string;
   email: string;
   password: string;
 };
@@ -25,6 +28,8 @@ const initialState: FormState = {
   tenant_id: "",
   reference_code: "",
   admission_date: "",
+  cpf: "",
+  cpf_confirmation: "",
   email: "",
   password: "",
 };
@@ -37,6 +42,12 @@ export function EmployeeActivationForm() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (normalizeCpf(form.cpf) !== normalizeCpf(form.cpf_confirmation)) {
+      setError("Confirme o mesmo CPF nos dois campos antes de ativar seu acesso.");
+      return;
+    }
+
     setIsSubmitting(true);
     setError(null);
 
@@ -123,7 +134,6 @@ export function EmployeeActivationForm() {
 
         <TextField
           label="Data de admissao"
-          type="date"
           value={form.admission_date}
           onChange={(event) =>
             setForm((current) => ({
@@ -133,18 +143,58 @@ export function EmployeeActivationForm() {
           }
           required
           disabled={isSubmitting}
-          slotProps={{ inputLabel: { shrink: true } }}
+          placeholder="31-12-2026"
+          helperText="Use o formato DD-MM-YYYY."
         />
 
         <TextField
-          label="E-mail"
+          label="CPF"
+          type="text"
+          value={form.cpf}
+          onChange={(event) =>
+            setForm((current) => ({ ...current, cpf: formatCpf(event.target.value) }))
+          }
+          required
+          disabled={isSubmitting}
+          placeholder="000.000.000-00"
+          helperText="Use o CPF do colaborador cadastrado no RH."
+          slotProps={{
+            htmlInput: {
+              maxLength: 14,
+            },
+          }}
+        />
+
+        <TextField
+          label="Confirme seu CPF"
+          type="text"
+          value={form.cpf_confirmation}
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              cpf_confirmation: formatCpf(event.target.value),
+            }))
+          }
+          required
+          disabled={isSubmitting}
+          placeholder="000.000.000-00"
+          helperText="Repita o CPF para evitar erro de digitacao."
+          slotProps={{
+            htmlInput: {
+              maxLength: 14,
+            },
+          }}
+        />
+
+        <TextField
+          label="E-mail (opcional)"
           type="email"
           value={form.email}
           onChange={(event) =>
             setForm((current) => ({ ...current, email: event.target.value }))
           }
-          required
           disabled={isSubmitting}
+          helperText="Use apenas se quiser receber comunicacoes futuras por e-mail."
         />
 
         <TextField

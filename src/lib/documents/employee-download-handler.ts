@@ -336,6 +336,23 @@ export async function handleEmployeeDocumentDownload(
           if (document.content_base64) {
             try {
               const dbBuffer = Buffer.from(document.content_base64, "base64");
+
+              await writeDocumentDownloadAuditFn({
+                tenantId,
+                actorId: session.userId,
+                documentId: document.document_id,
+                status: "success",
+                correlationId,
+                ipAddress: request.headers.get("x-forwarded-for") ?? undefined,
+                details: {
+                  document_type: document.document_type,
+                  period_ref: document.period_ref,
+                  disposition,
+                  source: "database_fallback",
+                  expires_at: new Date(queryParsed.data.exp * 1000).toISOString(),
+                },
+              });
+
               return new NextResponse(new Uint8Array(dbBuffer), {
                 status: 200,
                 headers: {
@@ -347,7 +364,7 @@ export async function handleEmployeeDocumentDownload(
                 },
               });
             } catch {
-              // fall through to error
+              // fall through to the audited unavailable response below
             }
           }
 

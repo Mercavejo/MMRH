@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { Providers } from "@/app/providers";
+import { BRAND_LONG_NAME } from "@/lib/brand";
 import "./globals.css";
 
 const ibmPlexSans = IBM_Plex_Sans({
@@ -16,8 +17,8 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SISTEMA ADALTO",
-  description: "Fundacao multi-tenant com design system corporativo",
+  title: BRAND_LONG_NAME,
+  description: `${BRAND_LONG_NAME} - fundacao multi-tenant com design system corporativo`,
 };
 
 export default function RootLayout({

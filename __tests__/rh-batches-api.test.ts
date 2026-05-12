@@ -14,6 +14,7 @@ const {
   dbSetMock,
   dbUpdateWhereMock,
   validateBatchImportFileMock,
+  persistPendingBatchImportMock,
   persistValidatedBatchImportMock,
   writeBatchImportAuditMock,
   writeBatchRoutingAuditMock,
@@ -31,6 +32,7 @@ const {
   dbSetMock: vi.fn(),
   dbUpdateWhereMock: vi.fn(),
   validateBatchImportFileMock: vi.fn(),
+  persistPendingBatchImportMock: vi.fn(),
   persistValidatedBatchImportMock: vi.fn(),
   writeBatchImportAuditMock: vi.fn(),
   writeBatchRoutingAuditMock: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock("@/lib/rh/batches/import-validation", () => ({
 }));
 
 vi.mock("@/lib/rh/batches/import-batch", () => ({
+  persistPendingBatchImport: persistPendingBatchImportMock,
   persistValidatedBatchImport: persistValidatedBatchImportMock,
   writeBatchImportAudit: writeBatchImportAuditMock,
 }));
@@ -202,6 +205,34 @@ describe("rh batch import api", () => {
     expect(validateBatchImportFileMock).toHaveBeenCalled();
     expect(persistValidatedBatchImportMock).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId: SESSION_TENANT_ID }),
+      expect.anything(),
+    );
+  });
+
+  it("passes cartao de ponto hint and returns ocr_pending on upload", async () => {
+    persistPendingBatchImportMock.mockResolvedValue({ batchId: "ffffffff-ffff-4fff-8fff-ffffffffffff" });
+
+    const formData = new FormData();
+    formData.append("file", new File(["%PDF-1.7"], "cartao-ponto.pdf", { type: "application/pdf" }));
+    formData.append("document_type", "cartao_ponto");
+
+    const request = new NextRequest("http://localhost/api/v1/rh/batches", {
+      method: "POST",
+      headers: { cookie: "session_id=token" },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.data.validation_summary.ocr_pending).toBe(true);
+    expect(validateBatchImportFileMock).not.toHaveBeenCalled();
+    expect(persistPendingBatchImportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: SESSION_TENANT_ID,
+        documentTypeHint: "cartao_ponto",
+      }),
       expect.anything(),
     );
   });

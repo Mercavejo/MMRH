@@ -41,6 +41,9 @@ export type BatchImportValidationSummary = {
   critical_issue_count: number;
   warning_issue_count: number;
   issues: BatchImportIssue[];
+  document_type_hint?: BatchImportDocumentType;
+  ocr_used?: boolean;
+  ocr_average_confidence?: number;
 };
 
 export type BatchImportValidationResult = {
@@ -55,6 +58,14 @@ export type BatchImportValidationResult = {
 
 const MAX_BATCH_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const MAX_BATCH_IMPORT_PDF_PAGES = 500;
+const MIN_CARTAO_PONTO_OCR_CONFIDENCE = 70;
+
+class PdfOcrProcessingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PdfOcrProcessingError";
+  }
+}
 
 function isJsonSource(mimeType: string, originalFilename: string): boolean {
   return (
@@ -94,24 +105,30 @@ function extractEmployeeHeaderFromPdfPage(pageText: string): {
 } {
   const labeledCode = extractFieldByRegex(
     pageText,
-    /(?:codigo[_\s-]*colaborador|employee[_\s-]*identifier|matricula)\s*[:#-]?\s*([A-Za-z0-9._-]+)/i,
+    /(?:codigo[_\s-]*colaborador|employee[_\s-]*identifier|matr[ií]cula)[^\S\r\n]*[:#-]?[^\S\r\n]*([A-Za-z0-9._-]+)/i,
   );
   const labeledName = extractFieldByRegex(
     pageText,
-    /(?:nome(?:\s+do\s+colaborador)?|employee(?:\s+name)?)\s*[:#-]?\s*([^\n\r]+)/i,
+    /(?:nome(?:\s+do\s+colaborador)?|employee(?:\s+name)?|funcion[aá]rio)\s*[:#-]?\s*([^\n\r]+)/i,
   );
-
-  if (labeledCode || labeledName) {
-    return {
-      codigoColaborador: labeledCode,
-      nomeColaborador: labeledName,
-    };
-  }
 
   const normalizedLines = pageText
     .split(/\r?\n/)
     .map((line) => line.replace(/\t+/g, " ").replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0);
+
+  const isolatedCode = normalizedLines.slice(0, 12).find((line) => /^\d{2,6}$/.test(line)) ?? null;
+  const funcionarioName = extractFieldByRegex(
+    pageText,
+    /funcion[aá]rio\s*[:#-]?\s*([^\n\r]+)/i,
+  );
+
+  if (labeledCode || labeledName || isolatedCode || funcionarioName) {
+    return {
+      codigoColaborador: labeledCode ?? isolatedCode,
+      nomeColaborador: labeledName ?? funcionarioName,
+    };
+  }
 
   for (const line of normalizedLines) {
     const payrollHeaderMatch = line.match(
@@ -133,13 +150,50 @@ function extractEmployeeHeaderFromPdfPage(pageText: string): {
 }
 
 function extractPeriodRefFromPdfPage(pageText: string): string | null {
+  const normalizedPageText = normalizeName(pageText);
   const explicitPeriod = extractFieldByRegex(
     pageText,
-    /(?:periodo|period_ref|competencia)\s*[:#-]?\s*(\d{4}-(0[1-9]|1[0-2]))/i,
+    /(?:periodo|period_ref|competencia)\s*[:#-]?\s*[^\d]{0,5}(\d{4}-(0[1-9]|1[0-2]))/i,
   );
 
   if (explicitPeriod) {
     return explicitPeriod;
+  }
+
+  const periodRangeMatch = pageText.match(
+    /(?:periodo|compet[eê]ncia)\s*[:#-]?\s*[^\d]{0,5}(\d{2})[\/-](\d{2})[\/-](\d{4})\s*(?:a|ate|até|à)\s*(\d{2})[\/-](\d{2})[\/-](\d{4})/i,
+  );
+
+  if (periodRangeMatch) {
+    const [, , startMonth, startYear] = periodRangeMatch;
+    return `${startYear}-${startMonth}`;
+  }
+
+  const simpleMonthYearMatch = pageText.match(
+    /(?:periodo|compet[eê]ncia)\s*[:#-]?\s*[^\d]{0,5}(\d{2})[\/-](\d{4})/i,
+  );
+
+  if (simpleMonthYearMatch) {
+    const [, month, year] = simpleMonthYearMatch;
+    return `${year}-${month}`;
+  }
+
+  const normalizedRangeMatch = normalizedPageText.match(
+    /(?:periodo|competencia)\s*[:#-]?\s*[^\d]{0,5}(\d{2})[\/-](\d{2})[\/-](\d{4})\s*(?:a|ate)\s*(\d{2})[\/-](\d{2})[\/-](\d{4})/i,
+  );
+
+  if (normalizedRangeMatch) {
+    const [, , startMonth, startYear] = normalizedRangeMatch;
+    return `${startYear}-${startMonth}`;
+  }
+
+  const normalizedMonthYearMatch = normalizedPageText.match(
+    /(?:periodo|competencia)\s*[:#-]?\s*[^\d]{0,5}(\d{2})[\/-](\d{4})/i,
+  );
+
+  if (normalizedMonthYearMatch) {
+    const [, month, year] = normalizedMonthYearMatch;
+    return `${year}-${month}`;
   }
 
   const monthMap: Record<string, string> = {
@@ -157,7 +211,6 @@ function extractPeriodRefFromPdfPage(pageText: string): string | null {
     dezembro: "12",
   };
 
-  const normalizedPageText = normalizeName(pageText);
   const monthPeriodMatch = normalizedPageText.match(
     /\b(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})\b/,
   );
@@ -182,7 +235,10 @@ function resolvePdfDocumentType(pageText: string): BatchImportDocumentType {
   return "holerite";
 }
 
-function extractPdfPageRows(rawText: string): BatchImportRow[] {
+function extractPdfPageRows(
+  rawText: string,
+  documentTypeHint?: BatchImportDocumentType,
+): BatchImportRow[] {
   const pages = rawText
     .split("\f")
     .map((page) => page.trim())
@@ -197,7 +253,7 @@ function extractPdfPageRows(rawText: string): BatchImportRow[] {
 
     return {
       employee_identifier: employeeIdentifier,
-      document_type: resolvePdfDocumentType(pageText),
+      document_type: documentTypeHint ?? resolvePdfDocumentType(pageText),
       period_ref: periodRef ?? "",
       page_index: index + 1,
       raw_text: pageText,
@@ -212,16 +268,48 @@ function isPasswordProtectedPdfError(error: unknown): boolean {
   return message.includes("password") || message.includes("encrypted");
 }
 
-async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; numpages: number }> {
+async function parsePdfBuffer(
+  buffer: Buffer,
+  options?: { documentTypeHint?: BatchImportDocumentType },
+): Promise<{
+  text: string;
+  numpages: number;
+  extractionMethod: "text" | "ocr";
+  averageConfidence?: number;
+}> {
   const { extractText, getDocumentProxy } = await import("unpdf");
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
   const result = await extractText(pdf, { mergePages: false });
+  const extractedText = result.text.join("\f");
 
-  return {
-    text: result.text.join("\f"),
-    numpages: result.totalPages,
-  };
+  if (extractedText.trim().length > 0 || options?.documentTypeHint !== "cartao_ponto") {
+    return {
+      text: extractedText,
+      numpages: result.totalPages,
+      extractionMethod: "text",
+    };
+  }
+
+  try {
+    const { extractPdfTextWithOcr } = await import("./ocr-engine");
+    const ocrResult = await extractPdfTextWithOcr(buffer);
+
+    return {
+      text: ocrResult.text,
+      numpages: ocrResult.numpages,
+      extractionMethod: "ocr",
+      averageConfidence: ocrResult.averageConfidence,
+    };
+  } catch (error) {
+    throw new PdfOcrProcessingError(
+      error instanceof Error ? error.message : "Falha ao executar OCR no PDF escaneado.",
+    );
+  }
 }
+
+export type BatchImportValidationOptions = {
+  pdfDocumentTypeHint?: BatchImportDocumentType;
+};
 
 function parseCsvLine(line: string): string[] {
   const values: string[] = [];
@@ -305,7 +393,10 @@ function buildBlockedSummary(params: {
   };
 }
 
-export async function validateBatchImportFile(file: File): Promise<BatchImportValidationResult> {
+export async function validateBatchImportFile(
+  file: File,
+  options: BatchImportValidationOptions = {},
+): Promise<BatchImportValidationResult> {
   const metadataParsed = batchImportMetadataSchema.safeParse({
     originalFilename: file.name,
     mimeType: file.type || "application/octet-stream",
@@ -396,17 +487,30 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
   const issues: BatchImportIssue[] = [];
   const rows: BatchImportRow[] = [];
   let sourceTotalRows = 0;
+  let pdfExtractionMethod: "text" | "ocr" | undefined;
+  let pdfAverageConfidence: number | undefined;
 
   if (sourceFormat === "pdf") {
-    let parsedPdf: { text?: string; numpages?: number };
+    let parsedPdf: {
+      text?: string;
+      numpages?: number;
+      extractionMethod?: "text" | "ocr";
+      averageConfidence?: number;
+    };
 
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
-      parsedPdf = await parsePdfBuffer(buffer);
+      parsedPdf = await parsePdfBuffer(buffer, {
+        documentTypeHint: options.pdfDocumentTypeHint,
+      });
+      pdfExtractionMethod = parsedPdf.extractionMethod;
+      pdfAverageConfidence = parsedPdf.averageConfidence;
     } catch (error) {
       const code = isPasswordProtectedPdfError(error)
         ? "PDF_PASSWORD_PROTECTED"
-        : "PDF_TEXT_NOT_EXTRACTABLE";
+        : error instanceof PdfOcrProcessingError
+          ? "PDF_OCR_FAILED"
+          : "PDF_TEXT_NOT_EXTRACTABLE";
 
       return {
         is_valid: false,
@@ -423,7 +527,9 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
               message:
                 code === "PDF_PASSWORD_PROTECTED"
                   ? "PDF protegido por senha nao pode ser processado."
-                  : "PDF sem texto extraivel para processamento.",
+                  : code === "PDF_OCR_FAILED"
+                    ? "Falha ao processar OCR do cartao de ponto escaneado."
+                    : "PDF sem texto extraivel para processamento.",
               severity: "critical",
             },
           ],
@@ -481,7 +587,34 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
       };
     }
 
-    const pdfRows = extractPdfPageRows(pdfText);
+    if (
+      parsedPdf.extractionMethod === "ocr" &&
+      typeof parsedPdf.averageConfidence === "number" &&
+      parsedPdf.averageConfidence < MIN_CARTAO_PONTO_OCR_CONFIDENCE
+    ) {
+      return {
+        is_valid: false,
+        validation_status: "blocked",
+        original_filename: originalFilename,
+        mime_type: mimeType,
+        file_size_bytes: fileSizeBytes,
+        rows,
+        summary: buildBlockedSummary({
+          sourceFormat,
+          issues: [
+            {
+              code: "OCR_LOW_CONFIDENCE",
+              message: "OCR com confianca insuficiente para roteamento seguro do cartao de ponto.",
+              severity: "critical",
+            },
+          ],
+          totalRows: pdfPageCount,
+          validRows: 0,
+        }),
+      };
+    }
+
+    const pdfRows = extractPdfPageRows(pdfText, options.pdfDocumentTypeHint);
     sourceTotalRows = pdfRows.length;
 
     if (pdfRows.length === 0) {
@@ -707,6 +840,9 @@ export async function validateBatchImportFile(file: File): Promise<BatchImportVa
       critical_issue_count: criticalIssueCount,
       warning_issue_count: warningIssueCount,
       issues,
+      document_type_hint: options.pdfDocumentTypeHint,
+      ocr_used: sourceFormat === "pdf" ? pdfExtractionMethod === "ocr" : undefined,
+      ocr_average_confidence: sourceFormat === "pdf" ? pdfAverageConfidence : undefined,
     },
   };
 }

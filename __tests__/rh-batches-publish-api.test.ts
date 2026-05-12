@@ -117,7 +117,34 @@ describe("rh batch publish api", () => {
         tenantId: SESSION_TENANT_ID,
         batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         idempotencyKey: "idem-123456",
+        skipMissingTargets: false,
       }),
+    );
+  });
+
+  it("passes partial publish confirmation flag to domain service", async () => {
+    const request = new NextRequest(
+      "http://localhost/api/v1/rh/batches/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/publish",
+      {
+        method: "POST",
+        headers: {
+          cookie: "session_id=token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          idempotency_key: "idem-123456",
+          skip_missing_targets: true,
+        }),
+      },
+    );
+
+    const response = await POST(request, {
+      params: Promise.resolve({ batchId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(publishBatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skipMissingTargets: true }),
     );
   });
 

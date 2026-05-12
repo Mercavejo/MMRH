@@ -38,6 +38,7 @@ import {
   Error as ErrorIcon,
   Analytics as AnalyticsIcon,
 } from '@mui/icons-material';
+import { ADMIN_LABEL, BRAND_SHORT_NAME } from '@/lib/brand';
 import { useRouter, usePathname } from 'next/navigation';
 import { tokens } from '@/lib/theme/tokens';
 
@@ -54,7 +55,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   // Colaborador
   { label: 'Meus Documentos', icon: <DescriptionIcon />, path: '/documents', role: 'colaborador', allowedTenantRoles: ['colaborador', 'rh_gestor', 'rh_operator', 'admin_plataforma', 'rh'] },
-  { label: 'Notificações', icon: <NotificationsIcon />, path: '/notifications', role: 'all', allowedTenantRoles: ['colaborador', 'rh_gestor', 'rh_operator', 'admin_plataforma', 'rh'] },
+  { label: 'Notificações', icon: <NotificationsIcon />, path: '/notifications', role: 'colaborador', allowedTenantRoles: ['colaborador'] },
   
   // RH
   { label: 'Dashboard', icon: <DashboardIcon />, path: '/rh', role: 'rh', allowedTenantRoles: ['rh_gestor', 'rh_operator', 'suporte', 'admin_plataforma', 'rh'] },
@@ -76,7 +77,7 @@ interface AppShellProps {
 }
 
 function getUserRoleLabel(role: AppShellProps['tenantRole'], userRole: AppShellProps['userRole']) {
-  if (role === 'admin_plataforma') return 'Admin Mercavejo';
+  if (role === 'admin_plataforma') return ADMIN_LABEL;
   if (role === 'suporte') return 'Suporte Interno';
   if (role === 'rh_operator') return 'Operador Cliente';
   if (role === 'rh_gestor') return 'Gestor Cliente';
@@ -116,7 +117,7 @@ export function AppShell({ children, userRole, userName, hasAccessToBoth = false
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Toolbar sx={{ px: 3, py: 4 }}>
         <Typography variant="h5" sx={{ fontWeight: 800, letterSpacing: '-0.5px', color: tokens.colors.primary }}>
-          ADALTO
+          {BRAND_SHORT_NAME}
           <Box component="span" sx={{ color: tokens.colors.action }}>.</Box>
         </Typography>
       </Toolbar>
