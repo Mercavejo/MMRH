@@ -209,7 +209,7 @@ export function BatchImportPageView(props: {
               <Alert severity="success" role="status">
                 {feedback.message}
                 <Box component="span" sx={{ display: "block", mt: 1 }}>
-                  Lote {feedback.batchId} validado com {feedback.summary.valid_rows} linha(s) aceitas.
+                  Lote {feedback.batchId} validado com {feedback.summary?.valid_rows ?? 0} linha(s) aceitas.
                 </Box>
               </Alert>
             ) : null}
