@@ -258,6 +258,59 @@ export default function RhBatchImportPage() {
   const [publishingInProgress, setPublishingInProgress] = useState(false);
   const publishIdempotencyKeyRef = useRef<string | null>(null);
   const publishBatchIdRef = useRef<string | null>(null);
+  const ocrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function pollOcrBatchStatus(batchId: string, tenantId: string) {
+    if (ocrPollRef.current) clearInterval(ocrPollRef.current);
+
+    ocrPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/v1/rh/batches/${batchId}`);
+        const payload = await res.json() as {
+          data: Record<string, unknown> | null;
+          error: { message: string } | null;
+        };
+
+        if (!res.ok || !payload.data) return;
+
+        const batch = payload.data as Record<string, unknown>;
+        const summary = batch.validation_summary as Record<string, unknown> | null;
+
+        if (!summary?.ocr_pending) {
+          clearInterval(ocrPollRef.current!);
+          ocrPollRef.current = null;
+
+          setRoutingProgress(
+            buildPendingBatchRoutingProgress({
+              batchId,
+              tenantId,
+              totalDocuments: (batch.routing_total_count as number) ?? (summary?.total_rows as number) ?? 0,
+            }),
+          );
+
+          setFeedback({
+            state: "success",
+            message: `OCR concluido! Lote validado com ${summary?.total_rows ?? 0} linha(s).`,
+            batchId,
+            summary: summary as unknown as BatchImportValidationSummary,
+          });
+
+          setRoutingNotice({
+            tone: "info",
+            message: "Lote validado via OCR. Inicie o roteamento para bloquear ambiguidades antes da publicacao.",
+          });
+        }
+      } catch {
+        // continua polling
+      }
+    }, 5_000);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (ocrPollRef.current) clearInterval(ocrPollRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const currentBatchId = routingProgress?.batch_id ?? null;
@@ -328,67 +381,18 @@ export default function RhBatchImportPage() {
       const isOcrPending = Boolean(payload.data.validation_summary?.ocr_pending);
 
       if (isOcrPending) {
-        setFeedback({ state: "ocr_validating", batchId: payload.data.batch_id });
+        setFeedback({
+          state: "success",
+          message: `Lote ${payload.data.original_filename} recebido. Aguardando processamento OCR pelo worker.`,
+          batchId: payload.data.batch_id,
+          summary: payload.data.validation_summary,
+        });
         setRoutingNotice({
           tone: "info",
-          message: "Lote recebido. Iniciando processamento OCR do cartao de ponto...",
+          message: "Lote enviado para fila de OCR. O worker do Railway processara em ate 2 minutos.",
         });
 
-        try {
-          const validateResponse = await fetch(
-            `/api/v1/rh/batches/${payload.data.batch_id}/validate`,
-            { method: "POST" },
-          );
-
-          const validatePayload = (await validateResponse.json()) as {
-            data: {
-              batch_id: string;
-              validation_status: "validated" | "blocked";
-              validation_summary: BatchImportValidationSummary;
-              original_filename: string;
-            } | null;
-            error: { message: string } | null;
-          };
-
-          if (!validateResponse.ok || !validatePayload.data) {
-            const validateMessage = validatePayload.error?.message ?? "Falha na validacao OCR do lote.";
-            setRoutingProgress(null);
-            setRoutingNotice({ tone: "error", message: validateMessage });
-            setFeedback({
-              state: "error",
-              message: validateMessage,
-            });
-            return;
-          }
-
-          setRoutingProgress(
-            buildPendingBatchRoutingProgress({
-              batchId: validatePayload.data.batch_id,
-              tenantId: payload.meta.tenant_id ?? "",
-              totalDocuments: validatePayload.data.validation_summary.total_rows,
-            }),
-          );
-          setRoutingNotice({
-            tone: "info",
-            message: "Lote validado via OCR. Inicie o roteamento para bloquear ambiguidades antes da publicacao.",
-          });
-          setFeedback({
-            state: "success",
-            message: `Lote ${validatePayload.data.original_filename} validado com OCR (${validatePayload.data.validation_summary.total_rows} linha(s)).`,
-            batchId: validatePayload.data.batch_id,
-            summary: validatePayload.data.validation_summary,
-          });
-        } catch {
-          setRoutingProgress(null);
-          setRoutingNotice({
-            tone: "error",
-            message: "Falha de comunicacao ao processar OCR do lote.",
-          });
-          setFeedback({
-            state: "error",
-            message: "Falha ao processar OCR do lote. Tente novamente.",
-          });
-        }
+        pollOcrBatchStatus(payload.data.batch_id, payload.meta.tenant_id ?? "");
         return;
       }
 
