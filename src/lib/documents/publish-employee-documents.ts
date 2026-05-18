@@ -109,6 +109,24 @@ function buildPublicationTargetBlocker(
   return null;
 }
 
+function expandReferenceCodeVariants(rawCode: string): string[] {
+  const trimmed = rawCode.trim();
+  const upper = trimmed.toUpperCase();
+  const digits = trimmed.replace(/\D/g, "");
+
+  const variants = new Set<string>();
+  variants.add(upper);
+
+  if (digits && digits.length <= 6) {
+    variants.add(digits);
+    variants.add(digits.padStart(3, "0"));
+    variants.add(digits.padStart(4, "0"));
+    variants.add(digits.padStart(6, "0"));
+  }
+
+  return Array.from(variants);
+}
+
 async function loadPublicationTargets(
   tenantId: string,
   referenceCodes: string[],
@@ -117,6 +135,10 @@ async function loadPublicationTargets(
   if (referenceCodes.length === 0) {
     return new Map();
   }
+
+  const allVariants = Array.from(
+    new Set(referenceCodes.flatMap((raw) => expandReferenceCodeVariants(raw))),
+  );
 
   const rows = await dbClient
     .select({
@@ -129,11 +151,28 @@ async function loadPublicationTargets(
     .where(
       and(
         eq(employeeIdentities.tenantId, tenantId),
-        inArray(employeeIdentities.referenceCode, referenceCodes),
+        inArray(employeeIdentities.referenceCode, allVariants),
       ),
     );
 
-  return new Map(rows.map((row) => [row.referenceCode, row]));
+  const byDbCode = new Map(rows.map((row) => [row.referenceCode, row]));
+
+  const result = new Map<string, EmployeeIdentityPublicationTarget>();
+
+  for (const rawCode of referenceCodes) {
+    const normalized = normalizeReferenceCode(rawCode);
+    const variants = expandReferenceCodeVariants(rawCode);
+
+    for (const variant of variants) {
+      const target = byDbCode.get(variant);
+      if (target) {
+        result.set(normalized, target);
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 async function extractSinglePagePdf(params: {
